@@ -43,28 +43,30 @@ class Net(nn.Module):
     def __init__(self, n_labels: int, voc_size: int, d: int):
         super(Net, self).__init__()
 
-        self.projections = []
-        for i in range(voc_size):
-            v = nn.Parameter(torch.Tensor(d))
-            with torch.no_grad():
-                nn.init.uniform_(v, -1.0 / math.sqrt(d), 1.0 / math.sqrt(d))
-            self.register_parameter(f'v{i}', v)
-            self.projections.append(v)
+        self.word_vectors = nn.Parameter(torch.Tensor(voc_size, d), requires_grad=False)
+        nn.init.uniform_(self.word_vectors, -1.0 / math.sqrt(d), 1.0 / math.sqrt(d))
 
         self.hidden = nn.Linear(d, n_labels)
-        with torch.no_grad():
-            nn.init.uniform_(self.hidden.weight, -1.0 / math.sqrt(d), 1.0 / math.sqrt(d))
 
-    def forward(self, sentences: Iterator[Sentence]):
-        zero_v = torch.zeros_like(self.projections[0])
+    def forward(self, sentences: List[Sentence]):
+        voc_size, d = self.word_vectors.shape
 
-        def embed(s: Sentence):
-            assert len(s) > 0
-            return reduce(lambda v, t: v + self.projections[t], s, zero_v) / len(s)
+        sv = torch.empty(len(sentences), d)  # sentence vectors
 
-        x = torch.stack([embed(s if len(s) < 500 else s[0:500]) for s in sentences])
-        x = self.hidden(x)
-        return x
+        for i, s in enumerate(sentences):
+            sv[i] = self.word_vectors[s].sum() / len(s)
+
+        def on_sv_grad(grad):
+            print(grad[0:5])
+            if self.word_vectors.grad is None:
+                self.word_vectors.grad = torch.zeros_like(self.word_vectors)
+            for i, s in enumerate(sentences):
+                self.word_vectors.grad[s] = grad[i] / len(s)
+
+        sv.requires_grad_(True)
+        sv.register_hook(on_sv_grad)
+
+        return self.hidden(sv)
 
 
 class Model:
@@ -74,7 +76,7 @@ class Model:
         self.epochs = epochs
         self.net = None
         self.groups = None
-        self._inv_groups = None
+        self.group_list = None
         self.batch_size = batch_size
 
     def train(self, group_text_pairs: Iterator[Tuple[Group, str]], log=lambda s: print(s, file=sys.stderr)):
@@ -96,37 +98,25 @@ class Model:
 
         log(f'Finished data import ({no_samples} training samples, {len(groups)} labels)')
 
-        y, sentences = shuffle(y, sentences)
-
         y = torch.tensor(y)
         net = Net(len(groups), self.voc_size, self.d)
         criterion = nn.CrossEntropyLoss()
         optimizer = torch.optim.SGD(net.parameters(), lr=0.5)
 
-        number_of_batches = max(1, (no_samples // self.batch_size) - 1)
-
         for epoch in range(self.epochs):
-            batch_start = 0
-            for batch_idx in range(number_of_batches):
-                if batch_idx + 1 < number_of_batches:
-                    batch_end = batch_start + self.batch_size
-                else:
-                    batch_end = no_samples
-
-                optimizer.zero_grad()
-                output = net(sentences[batch_start:batch_end])
-                loss = criterion(output, y[batch_start:batch_end])
-                loss.backward()
-                optimizer.step()
-                if batch_end == no_samples:
-                    log(f'Finished epoch {epoch + 1} out of {self.epochs}, loss={loss.item()}')
+            optimizer.zero_grad()
+            output = net(sentences)
+            loss = criterion(output, y)
+            loss.backward()
+            optimizer.step()
+            log(f'Finished epoch {epoch + 1} out of {self.epochs}, loss={loss.item()}')
 
         self.net = net
         self.groups = groups
-        self._inv_groups = [l for l, _ in sorted(groups.items(), key=lambda li: li[1])]
+        self.group_list = [l for l, _ in sorted(groups.items(), key=lambda li: li[1])]
 
     def prob(self, samples: Iterator[str]):
-        x = self.net.forward(tokenize(s, self.voc_size) for s in samples)
+        x = self.net.forward([tokenize(s, self.voc_size) for s in samples])
         x = nnf.softmax(x, dim=1)
         return x
 
@@ -135,7 +125,7 @@ class Model:
         return [self.get_group(i) for i in p.argmax(dim=1).numpy()]
 
     def get_group(self, idx: int) -> Group:
-        return self._inv_groups[idx]
+        return self.group_list[idx]
 
 
 def train(group_text_pairs: Iterator[Tuple[Group, str]]):

@@ -1,8 +1,5 @@
-from functools import reduce
 from typing import List, Iterator, Any, Tuple
-from sklearn.utils import shuffle
 import murmurhash
-import math
 import re
 import sys
 import torch
@@ -44,9 +41,12 @@ class Net(nn.Module):
         super(Net, self).__init__()
 
         self.word_vectors = nn.Parameter(torch.Tensor(voc_size, d), requires_grad=False)
-        nn.init.uniform_(self.word_vectors, -1.0 / math.sqrt(d), 1.0 / math.sqrt(d))
+        nn.init.uniform_(self.word_vectors, -1.0/d, 1.0/d)
 
         self.hidden = nn.Linear(d, n_labels)
+        # with torch.no_grad():
+        #     self.hidden.weight.zero_()
+        #     self.hidden.bias.zero_()
 
     def forward(self, sentences: List[Sentence]):
         voc_size, d = self.word_vectors.shape
@@ -57,7 +57,6 @@ class Net(nn.Module):
             sv[i] = self.word_vectors[s].sum() / len(s)
 
         def on_sv_grad(grad):
-            print(grad[0:5])
             if self.word_vectors.grad is None:
                 self.word_vectors.grad = torch.zeros_like(self.word_vectors)
             for i, s in enumerate(sentences):
@@ -70,14 +69,14 @@ class Net(nn.Module):
 
 
 class Model:
-    def __init__(self, voc_size: int, d: int = 100, epochs: int = 10, batch_size: int = 100):
+    def __init__(self, voc_size: int, d: int = 100, epochs: int = 10, batch_size: int = 10):
         self.voc_size = voc_size
         self.d = d
         self.epochs = epochs
+        self.batch_size = batch_size
         self.net = None
         self.groups = None
         self.group_list = None
-        self.batch_size = batch_size
 
     def train(self, group_text_pairs: Iterator[Tuple[Group, str]], log=lambda s: print(s, file=sys.stderr)):
         groups = {}
@@ -94,22 +93,37 @@ class Model:
         for group, txt in group_text_pairs:
             y.append(group_idx(group))
             sentences.append(tokenize(txt, self.voc_size))
+
         no_samples = len(y)
 
         log(f'Finished data import ({no_samples} training samples, {len(groups)} labels)')
 
         y = torch.tensor(y)
         net = Net(len(groups), self.voc_size, self.d)
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss(reduction='mean')
         optimizer = torch.optim.SGD(net.parameters(), lr=0.5)
 
+        number_of_batches = max(1, (no_samples // self.batch_size) - 1)
+
         for epoch in range(self.epochs):
-            optimizer.zero_grad()
-            output = net(sentences)
-            loss = criterion(output, y)
-            loss.backward()
-            optimizer.step()
-            log(f'Finished epoch {epoch + 1} out of {self.epochs}, loss={loss.item()}')
+            batch_start = 0
+            epoch_loss = 0.0
+
+            for batch_idx in range(number_of_batches):
+                if batch_idx + 1 < number_of_batches:
+                    batch_end = batch_start + self.batch_size
+                else:
+                    batch_end = no_samples
+
+                optimizer.zero_grad()
+                output = net(sentences[batch_start:batch_end])
+                loss = criterion(output, y[batch_start:batch_end])
+                loss.backward()
+                optimizer.step()
+
+                epoch_loss += loss.item()
+
+            log(f'Finished epoch {epoch + 1} out of {self.epochs}, loss={epoch_loss / number_of_batches}')
 
         self.net = net
         self.groups = groups

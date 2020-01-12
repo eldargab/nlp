@@ -1,5 +1,4 @@
 from typing import List, Iterator, Any, Tuple
-import murmurhash
 import re
 import sys
 import torch
@@ -12,28 +11,36 @@ Sentence = List[Tok]
 Group = Any
 
 
-def tokenize(txt: str, voc_size: int) -> Sentence:
+def split_words(txt: str):
     txt = txt.lower().replace('-', '_')
-    words = re.split(r'\W+', txt)
+    return re.split(r'\W+', txt)
 
-    if voc_size.bit_length() > 30:
-        raise ValueError('voc_size is too big')
 
-    out = []
-    added = set()
+class Tokenizer:
+    def __init__(self):
+        self.voc = {}
 
-    def add_word(w):
-        h = murmurhash.hash(w) % voc_size
-        if h not in added:
-            added.add(h)
-            out.append(h)
+    def fit(self, txt: str):
+        return self._tokenize(txt, extend=True)
 
-    for idx, word in enumerate(words):
-        add_word(word)
-        if idx + 1 < len(words):
-            add_word(word + ' ' + words[idx + 1])
+    def __call__(self, txt: str):
+        return self._tokenize(txt, extend=False)
 
-    return out
+    def _tokenize(self, txt: str, extend: bool):
+        out = []
+        for w in split_words(txt):
+            idx = self.voc.get(w)
+            if idx is None:
+                if extend:
+                    idx = len(self.voc)
+                    self.voc[w] = idx
+                else:
+                    continue
+            out.append(idx)
+        return out
+
+    def voc_size(self):
+        return len(self.voc)
 
 
 class Net(nn.Module):
@@ -44,9 +51,9 @@ class Net(nn.Module):
         nn.init.uniform_(self.word_vectors, -1.0/d, 1.0/d)
 
         self.hidden = nn.Linear(d, n_labels)
-        # with torch.no_grad():
-        #     self.hidden.weight.zero_()
-        #     self.hidden.bias.zero_()
+        with torch.no_grad():
+            self.hidden.weight.zero_()
+            self.hidden.bias.zero_()
 
     def forward(self, sentences: List[Sentence]):
         voc_size, d = self.word_vectors.shape
@@ -69,17 +76,18 @@ class Net(nn.Module):
 
 
 class Model:
-    def __init__(self, voc_size: int, d: int = 100, epochs: int = 10, batch_size: int = 10):
-        self.voc_size = voc_size
+    def __init__(self, d: int = 100, epochs: int = 10, batch_size: int = 10):
         self.d = d
         self.epochs = epochs
         self.batch_size = batch_size
+        self.tokens = None
         self.net = None
         self.groups = None
         self.group_list = None
 
     def train(self, group_text_pairs: Iterator[Tuple[Group, str]], log=lambda s: print(s, file=sys.stderr)):
         groups = {}
+        tokens = Tokenizer()
 
         def group_idx(l):
             idx = groups.get(l)
@@ -91,15 +99,17 @@ class Model:
         y = []
         sentences = []
         for group, txt in group_text_pairs:
-            y.append(group_idx(group))
-            sentences.append(tokenize(txt, self.voc_size))
+            sentence = tokens.fit(txt)
+            if sentence:
+                y.append(group_idx(group))
+                sentences.append(sentence)
 
         no_samples = len(y)
 
         log(f'Finished data import ({no_samples} training samples, {len(groups)} labels)')
 
         y = torch.tensor(y)
-        net = Net(len(groups), self.voc_size, self.d)
+        net = Net(len(groups), tokens.voc_size(), self.d)
         criterion = nn.CrossEntropyLoss(reduction='mean')
         optimizer = torch.optim.SGD(net.parameters(), lr=0.5)
 
@@ -125,12 +135,13 @@ class Model:
 
             log(f'Finished epoch {epoch + 1} out of {self.epochs}, loss={epoch_loss / number_of_batches}')
 
+        self.tokens = tokens
         self.net = net
         self.groups = groups
         self.group_list = [l for l, _ in sorted(groups.items(), key=lambda li: li[1])]
 
     def prob(self, samples: Iterator[str]):
-        x = self.net.forward([tokenize(s, self.voc_size) for s in samples])
+        x = self.net.forward([self.tokens(s) for s in samples])
         x = nnf.softmax(x, dim=1)
         return x
 
@@ -143,6 +154,14 @@ class Model:
 
 
 def train(group_text_pairs: Iterator[Tuple[Group, str]]):
-    m = Model(30000)
+    m = Model()
     m.train(group_text_pairs)
     return m
+
+
+def prepare_ft_file(group_text_pairs: Iterator[Tuple[Group, str]], out_file):
+    with open(out_file, 'w') as out:
+        for g, t in group_text_pairs:
+            g = re.sub(r'\W', '_', g).lower()
+            t = " ".join(split_words(t))
+            print(f'__label__{g} {t}', file=out)

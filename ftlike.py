@@ -1,14 +1,12 @@
 from typing import List, Iterator, Any, Tuple
 import re
 import sys
-import torch
-import torch.nn as nn
-import torch.nn.functional as nnf
+import math
+import numpy as np
 
 
-Tok = int
-Sentence = List[Tok]
 Group = Any
+Sentence = np.array  # array of word indexes
 
 
 def split_words(txt: str):
@@ -43,40 +41,35 @@ class Tokenizer:
         return len(self.voc)
 
 
-class Net(nn.Module):
+def softmax(x: np.array):
+    x = x - np.max(x)
+    e = np.exp(x)
+    s = np.sum(e)
+    return e / s
+
+
+class Net:
     def __init__(self, n_labels: int, voc_size: int, d: int):
-        super(Net, self).__init__()
+        self.word_vectors = np.random.default_rng().uniform(-1.0/d, 1.0/d, (voc_size, d))
+        self.weights = np.zeros((n_labels, d))
 
-        self.word_vectors = nn.Parameter(torch.Tensor(voc_size, d), requires_grad=False)
-        nn.init.uniform_(self.word_vectors, -1.0/d, 1.0/d)
+    def forward(self, s: Sentence):
+        sv = np.sum(self.word_vectors[s], axis=0) / len(s)
+        o = np.matmul(self.weights, sv)
+        return softmax(o)
 
-        self.hidden = nn.Linear(d, n_labels)
-        with torch.no_grad():
-            self.hidden.weight.zero_()
-            self.hidden.bias.zero_()
-
-    def forward(self, sentences: List[Sentence]):
-        voc_size, d = self.word_vectors.shape
-
-        sv = torch.empty(len(sentences), d)  # sentence vectors
-
-        for i, s in enumerate(sentences):
-            sv[i] = self.word_vectors[s].sum() / len(s)
-
-        def on_sv_grad(grad):
-            if self.word_vectors.grad is None:
-                self.word_vectors.grad = torch.zeros_like(self.word_vectors)
-            for i, s in enumerate(sentences):
-                self.word_vectors.grad[s] = grad[i] / len(s)
-
-        sv.requires_grad_(True)
-        sv.register_hook(on_sv_grad)
-
-        return self.hidden(sv)
+    def backward(self, s: Sentence, y: int, lr):
+        sv = np.sum(self.word_vectors[s], axis=0) / len(s)
+        p = softmax(np.matmul(self.weights, sv))
+        alpha = p * (-1.0 * lr)
+        alpha[y] = (1 - p[y]) * lr
+        self.word_vectors[s] += np.matmul(alpha, self.weights) / len(s)
+        self.weights += np.outer(alpha, sv)
+        return -math.log(p[y])
 
 
 class Model:
-    def __init__(self, d: int = 100, epochs: int = 10, batch_size: int = 10):
+    def __init__(self, d: int = 100, epochs: int = 5, batch_size: int = 10):
         self.d = d
         self.epochs = epochs
         self.batch_size = batch_size
@@ -99,55 +92,34 @@ class Model:
         y = []
         sentences = []
         for group, txt in group_text_pairs:
-            sentence = tokens.fit(txt)
-            if sentence:
+            s = tokens.fit(txt)
+            if s:
                 y.append(group_idx(group))
-                sentences.append(sentence)
+                sentences.append(np.array(s))
 
         no_samples = len(y)
-
         log(f'Finished data import ({no_samples} training samples, {len(groups)} labels)')
 
-        y = torch.tensor(y)
         net = Net(len(groups), tokens.voc_size(), self.d)
-        criterion = nn.CrossEntropyLoss(reduction='mean')
-        optimizer = torch.optim.SGD(net.parameters(), lr=0.5)
-
-        number_of_batches = max(1, (no_samples // self.batch_size) - 1)
 
         for epoch in range(self.epochs):
-            batch_start = 0
             epoch_loss = 0.0
-
-            for batch_idx in range(number_of_batches):
-                if batch_idx + 1 < number_of_batches:
-                    batch_end = batch_start + self.batch_size
-                else:
-                    batch_end = no_samples
-
-                optimizer.zero_grad()
-                output = net(sentences[batch_start:batch_end])
-                loss = criterion(output, y[batch_start:batch_end])
-                loss.backward()
-                optimizer.step()
-
-                epoch_loss += loss.item()
-
-            log(f'Finished epoch {epoch + 1} out of {self.epochs}, loss={epoch_loss / number_of_batches}')
+            for i in range(0, no_samples):
+                epoch_loss += net.backward(sentences[i], y[i], 0.1)
+            log(f'Finished epoch {epoch + 1} out of {self.epochs}, loss={epoch_loss / no_samples}')
 
         self.tokens = tokens
         self.net = net
         self.groups = groups
         self.group_list = [l for l, _ in sorted(groups.items(), key=lambda li: li[1])]
 
-    def prob(self, samples: Iterator[str]):
-        x = self.net.forward([self.tokens(s) for s in samples])
-        x = nnf.softmax(x, dim=1)
-        return x
+    def prob(self, txt: str):
+        s = self.tokens(txt)
+        return self.net.forward(s)
 
-    def predict(self, samples: Iterator[str]):
-        p = self.prob(samples)
-        return [self.get_group(i) for i in p.argmax(dim=1).numpy()]
+    def predict(self, txt: str):
+        p = self.prob(txt)
+        return self.get_group(np.argmax(p))
 
     def get_group(self, idx: int) -> Group:
         return self.group_list[idx]

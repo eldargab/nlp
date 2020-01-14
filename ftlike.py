@@ -131,9 +131,42 @@ def train(group_text_pairs: Iterator[Tuple[Group, str]]):
     return m
 
 
-def prepare_ft_file(group_text_pairs: Iterator[Tuple[Group, str]], out_file):
+def prepare_ft_file(group_text_pairs: Iterator[Tuple[Group, str]], out_file, groups=None):
     with open(out_file, 'w') as out:
         for g, t in group_text_pairs:
+            if groups and g not in groups:
+                g = 'other__'
             g = re.sub(r'\W', '_', g).lower()
             t = " ".join(split_words(t))
             print(f'__label__{g} {t}', file=out)
+
+
+def reduce_ft_word_vectors_dim(vec_file, out_file, target_dim=100):
+    with open(vec_file) as f:
+        header = f.readline().split(' ')
+        n = int(header[0])
+        d = int(header[1])
+        if d <= target_dim:
+            raise ValueError(f'Src vectors have dimension {d}, which is not greater than target dimension {target_dim}')
+
+        words = []
+        vec = np.empty((n, d), dtype=np.float32)
+
+        for i, line in enumerate(f):
+            line = line.rstrip().split(' ')
+            words.append(line[0])
+            for j, x in enumerate(line[1:]):
+                vec[i, j] = float(x)
+
+    from sklearn.decomposition import PCA
+    pca = PCA(n_components=target_dim, copy=False)
+    vec = pca.fit_transform(vec)
+
+    with open(out_file, 'w') as out:
+        out.write(f'{n} {target_dim}\n')
+        for i, w in enumerate(words):
+            out.write(w)
+            for x in vec[i]:
+                out.write(' ')
+                out.write(str(x))
+            out.write('\n')

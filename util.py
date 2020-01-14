@@ -97,3 +97,8 @@ def describe_results(r):
     s['Fp'] = s.Fp.astype(int)
 
     return s
+
+
+def read_groups(file_name):
+    with contextlib.closing(select(file_name, skip_first=False)) as lines:
+        return dict((g, float(p)) for g, p in lines)

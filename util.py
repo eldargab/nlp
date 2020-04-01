@@ -1,8 +1,7 @@
 from collections import OrderedDict
-import contextlib
 import datetime as dt
-import csv
 import pandas as pd
+import dask.dataframe as dd
 
 
 def to_date(s):
@@ -12,20 +11,8 @@ def to_date(s):
         return None
 
 
-def select(csv_file, cols=None, skip_first=True):
-    with open(csv_file) as lines:
-        skipped = not skip_first
-        for line in csv.reader(lines, delimiter=',', quotechar='"'):
-            if not skipped:
-                skipped = True
-                continue
-            if cols:
-                line = tuple(map(lambda i: line[i], cols))
-            yield line
-
-
-def select_group_text_pairs(sample_file):
-    return select(sample_file, (2, 3))
+def read_csv_dataset(f: str) -> dd.DataFrame:
+    return dd.read_csv(f, converters={'Date': to_date}, blocksize=None, sample=False)
 
 
 def frequencies(size_series: pd.Series):
@@ -40,35 +27,12 @@ def frequencies(size_series: pd.Series):
     ]))
 
 
-def groups_summary(data: pd.DataFrame):
-    sizes = data.groupby('Group').size()
+def groups_summary(ds: pd.DataFrame):
+    sizes = ds.groupby('Group').size()
     return frequencies(sizes)
 
 
-def validate(predict, data):
-    if isinstance(data, pd.DataFrame):
-        g = data['Text'].map(predict)
-        return pd.DataFrame(OrderedDict([
-            ('Id', data['Id']),
-            ('Date', data['Date']),
-            ('Group', data['Group']),
-            ('Guess', g)
-        ]))
-    elif isinstance(data, str):
-        with contextlib.closing(select(data)) as lines:
-            return _validate_lines(predict, lines)
-    else:
-        return _validate_lines(predict, data)
-
-
-def _validate_lines(predict, data_lines):
-    return pd.DataFrame(
-        ((int(id), to_date(date), group, predict(txt)) for id, date, group, txt in data_lines),
-        columns=['Id', 'Date', 'Group', 'Guess']
-    )
-
-
-def describe_results(r):
+def describe_results(r: pd.DataFrame):
     hits = r.Group == r.Guess
     misses = ~hits
 
@@ -97,8 +61,3 @@ def describe_results(r):
     s['Fp'] = s.Fp.astype(int)
 
     return s
-
-
-def read_groups(file_name):
-    with contextlib.closing(select(file_name, skip_first=False)) as lines:
-        return dict((g, float(p)) for g, p in lines)

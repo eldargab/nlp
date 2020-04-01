@@ -107,13 +107,17 @@ class Builder:
 
 
     def run(self, f: Callable[[], T]) -> T:
-        t = get_task(f)
+        try:
+            t = f._builder_task
+        except AttributeError:
+            t = None
+
         self._epoch += 1
         global _BUILDER
         prev_builder = _BUILDER
         _BUILDER = self
         try:
-            return self._eval(t.id)
+            return self._eval(t.id) if t else f()
         finally:
             _BUILDER = prev_builder
 
@@ -137,52 +141,46 @@ def task(f):
     return task_fn
 
 
-class AlreadyExists(Exception):
-    pass
-
-
-_FILE = None
-
-
-def _register_file(filename):
-    global _FILE
-    _FILE = filename
-    if os.path.exists(filename):
-        raise AlreadyExists
-
-
-def file_task(f: Callable[[], None]) -> Callable[[], str]:
-
-    @wraps(f)
-    def file_task_fn():
-        global _FILE
-        prev_file = _FILE
-        _FILE = None
-        try:
-            f()
-            if not _FILE:
-                raise RuntimeError(f'build_filename() was not called within a file task {f.__name__}')
-            return _FILE
-        except AlreadyExists:
-            assert _FILE
-            return _FILE
-        finally:
-            _FILE = prev_file
-
-    return task(file_task_fn)
-
-
-def build_filename(name: str) -> str:
+def filename(name: str) -> str:
     global _BUILDER
     temp_dir = _BUILDER.temp_dir if _BUILDER else os.path.abspath('tmp')
     file = os.path.join(temp_dir, name)
-    _register_file(file)
-    return file
+    return os.path.normpath(file)
+
+
+def derive_filename(f: str, new_ext: str) -> str:
+    name = os.path.basename(f)
+    prefix, ext = os.path.splitext(name)
+    return filename(prefix + new_ext)
+
+
+def is_fresh(f: str, *deps) -> bool:
+    try:
+        mtime = os.path.getmtime(f)
+    except FileNotFoundError:
+        return False
+    for dep in deps:
+        try:
+            dep_mtime = os.path.getmtime(dep)
+            if mtime < dep_mtime:
+                return False
+        except FileNotFoundError:
+            pass
+    return True
+
+
+def set_default_builder(modules, temp_dir='tmp'):
+    global _BUILDER
+    if _BUILDER and _BUILDER._current_task:
+        raise RuntimeError('set_default_builder() is not allowed within a task')
+    _BUILDER = Builder(modules, temp_dir=temp_dir)
 
 
 __all__ = [
     'Builder',
     'task',
-    'file_task',
-    'build_filename'
+    'filename',
+    'derive_filename',
+    'is_fresh',
+    'set_default_builder'
 ]

@@ -4,7 +4,11 @@ ipython:
 	import numpy as np;\
 	import torch;\
 	import itertools;\
-	get_ipython().magic('aimport util');\
+	import dask;\
+	import dask.dataframe as dd;\
+	from builder import *;\
+	set_default_builder(globals());\
+	get_ipython().magic('aimport util, exp');\
 	"
 
 

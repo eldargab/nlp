@@ -11,7 +11,7 @@ def to_date(s):
         return None
 
 
-def read_csv_dataset(f: str) -> dd.DataFrame:
+def read_csv_dataset(f) -> dd.DataFrame:
     return dd.read_csv(f, converters={'Date': to_date}, blocksize=None, sample=False)
 
 

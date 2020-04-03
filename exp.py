@@ -2,6 +2,8 @@ from builder import *
 import pandas as pd
 import dask.dataframe as dd
 import util
+import glob
+import os
 
 
 @task
@@ -21,16 +23,36 @@ def csv_format():
 @task
 def parquet_dataset() -> str:
     options = csv_format()
+    csv_glob = csv_dataset()
 
-    def to_parquet(files, out):
-        dd.read_csv(files, blocksize=None, sample=False, **options).to_parquet(out, compression='gzip')
+    csv_files = glob.glob(csv_glob)
+    if not csv_files:
+        raise RuntimeError('No files matched glob ' + csv_glob)
 
-    return compile(csv_dataset(), '.parquet', to_parquet)
+    for csv_file in csv_files:
+        reg_src(csv_file)
+
+    if len(csv_files) > 1:
+        filename = os.path.dirname(csv_files[0])
+    else:
+        filename = csv_files[0]
+
+    filename = os.path.basename(os.path.splitext(filename)[0]) + '.parquet'
+
+    def to_parquet(out):
+        dd.read_csv(csv_files, blocksize=None, sample=False, **options).to_parquet(out)
+
+    return output(filename, to_parquet)
+
+
+@task
+def raw_dataset() -> dd.DataFrame:
+    return dd.read_parquet(parquet_dataset())
 
 
 @task
 def dataset() -> dd.DataFrame:
-    return dd.read_parquet(parquet_dataset())
+    return raw_dataset()
 
 
 @task

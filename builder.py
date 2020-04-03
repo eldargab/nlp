@@ -1,14 +1,16 @@
-from contextlib import contextmanager
-from functools import wraps, reduce
-from typing import Callable, Any, Mapping, TypeVar, NamedTuple, Union, MutableMapping, MutableSet, Set, List
-from datetime import datetime
-from zlib import crc32
 import os
+import struct
+from collections import OrderedDict
+from contextlib import contextmanager
+from functools import wraps
+from typing import Callable, Any, TypeVar, NamedTuple, Union, MutableMapping, MutableSet, List, Iterable, Tuple
+from zlib import crc32
 
 
 T = TypeVar("T")
 Id = str
 Mtime = float
+CRC = int
 
 
 class Task(NamedTuple):
@@ -30,31 +32,63 @@ def get_mtime(path) -> Mtime:
         return 0
 
 
+def crc_int(val: int, crc: CRC) -> CRC:
+    return crc32(struct.pack('n', val), crc)
+
+
+def crc_float(val: float, crc: CRC) -> CRC:
+    return crc32(struct.pack('f', val), crc)
+
+
+def crc_str(val: str, crc: CRC) -> CRC:
+    return crc32(val.encode(), crc)
+
+
+def crc_files(files: Iterable[str], crc: CRC) -> CRC:
+    for f in sorted(files):
+        crc = crc_str(f, crc)
+        crc = crc_float(get_mtime(f), crc)
+    return crc
+
+
 class Rec:
     id: Id
     f: Any
     value: Any
-    deps: MutableMapping[Id, Any]
+    deps: MutableMapping[Id, Tuple[Any, CRC]]
     src_files: MutableSet[str]
-    out_files: MutableSet[str]
-    mtime: Mtime
+    output_files: List[str]
+    crc: CRC
     epoch: int
 
     def __init__(self, task):
         self.id = task.id
         self.f = task.f
         self.value = None
-        self.deps = {}
+        self.deps = OrderedDict()
         self.src_files = set()
-        self.out_files = set()
-        self.mtime = 0.0
+        self.output_files = []
+        self.crc = 0
         self.epoch = 0
 
     def reset(self):
         self.deps.clear()
         self.src_files.clear()
-        self.out_files.clear()
-        self.mtime = 0
+        self.output_files.clear()
+        self.crc = 0
+
+    def reg_dep(self, rec: 'Rec'):
+        self.deps[rec.id] = (rec.value, rec.crc)
+        if rec.crc > 0:
+            self.crc = crc_int(rec.crc, self.crc)
+
+    def compute(self):
+        self.value = self.f()
+        self.crc = self.complete_crc()
+
+    def complete_crc(self) -> CRC:
+        return crc_files(self.src_files, self.crc)
+
 
 
 class Builder:
@@ -90,7 +124,7 @@ class Builder:
             self._current_task = prev
 
 
-    def _eval(self, task_id: Id):
+    def _eval(self, task_id: Id) -> Rec:
         wrapped_fn = self._module.get(task_id)
         if not wrapped_fn:
             raise ValueError(f'{task_id} is not defined in the current builder')
@@ -105,9 +139,9 @@ class Builder:
         self._compute(rec)
 
         if self._current_task:
-            self._current_task.deps[rec.id] = rec.value
+            self._current_task.reg_dep(rec)
 
-        return rec.value
+        return rec
 
 
     def _compute(self, rec: Rec):
@@ -117,40 +151,35 @@ class Builder:
         if rec.epoch == 0 or self._has_changed_deps(rec):
             rec.reset()
             with self._new_task_ctx(rec):
-                rec.value = rec.f()
-                if rec.src_files:
-                    rec.mtime = datetime.now().timestamp()
+                rec.compute()
 
         rec.epoch = self._epoch
 
 
     def _has_changed_deps(self, rec: Rec):
-        with self._new_task_ctx(None):
-            for dep, old_val in rec.deps.items():
-                if old_val is not self._eval(dep):
-                    return True
-
-        src_mtime = max((get_mtime(f) for f in rec.src_files), default=0)
-
-        for out in rec.out_files:
-            if src_mtime > get_mtime(out):
+        for f in rec.output_files:
+            if not os.path.exists(f):
                 return True
 
-        return src_mtime > rec.mtime
+        crc = 0
+        with self._new_task_ctx(None):
+            for dep_id, (old_val, old_crc) in rec.deps.items():
+                dep = self._eval(dep_id)
+                if dep.value is not old_val:
+                    return True
+                if dep.crc != old_crc:
+                    return True
+                if dep.crc > 0:
+                    crc = crc_int(dep.crc, crc)
+
+        crc = crc_files(rec.src_files, crc)
+
+        return crc != rec.crc
 
 
     def reg_src(self, f: str):
         if self._current_task:
             self._current_task.src_files.add(os.path.abspath(f))
-
-
-    def reg_out(self, f: str):
-        if self._current_task:
-            self._current_task.out_files.add(os.path.abspath(f))
-
-
-    def current_src_files(self) -> Union[Set[str], None]:
-        return self._current_task and self._current_task.src_files
 
 
     def set_constant(self, name: str, val):
@@ -162,7 +191,7 @@ class Builder:
 
 
     @contextmanager
-    def _session(self):
+    def session(self):
         self._epoch += 1
         self._running = True
         global _BUILDER
@@ -177,10 +206,10 @@ class Builder:
 
     def eval(self, task_id: str):
         if self._running:
-            return self._eval(task_id)
+            return self._eval(task_id).value
         else:
-            with self._session():
-                return self._eval(task_id)
+            with self.session():
+                return self._eval(task_id).value
 
 
     def run(self, f: Callable[[], T]) -> T:
@@ -190,15 +219,39 @@ class Builder:
             t = None
 
         if self._running:
-            return self._eval(t.id) if t else f()
+            return self._eval(t.id).value if t else f()
         else:
-            with self._session():
-                return self._eval(t.id) if t else f()
+            with self.session():
+                return self._eval(t.id).value if t else f()
+
+
+    def output(self, name: str, build_fn: Callable[[str], None]) -> str:
+        if not self._current_task:
+            raise RuntimeError('No current task')
+
+        crc = self._current_task.complete_crc()
+        path = os.path.abspath(os.path.join(self.temp_dir, name))
+        prefix, ext = os.path.splitext(path)
+        filename = prefix + '-' + '{:x}'.format(crc) + ext
+
+        if os.path.exists(filename):
+            return filename
+
+        temp_file = filename + '.tmp'
+
+        build_fn(temp_file)
+
+        if crc != self._current_task.complete_crc():
+            raise RuntimeError(f'Dependencies of task {self._current_task.id} have changed after output() invocation')
+
+        os.rename(temp_file, filename)
+        self._current_task.output_files.append(filename)
+        return filename
 
 
     @property
-    def has_task(self) -> bool:
-        return self._current_task is not None
+    def is_running(self) -> bool:
+        return self._running
 
 
 _BUILDER = None  # type: Union[Builder, None]
@@ -220,22 +273,6 @@ def task(f):
     return task_fn
 
 
-def filename(name: str) -> str:
-    global _BUILDER
-    temp_dir = _BUILDER.temp_dir if _BUILDER else os.path.abspath('tmp')
-    file = os.path.join(temp_dir, name)
-    return os.path.normpath(file)
-
-
-def output(f: str) -> str:
-    global _BUILDER
-    if _BUILDER and _BUILDER.current_src_files():
-        name, ext = os.path.splitext(f)
-        checksum = reduce(lambda crc, src: crc32(src.encode(), crc), sorted(_BUILDER.current_src_files()), 0)
-        f = os.path.basename(name) + '-' + '{:x}'.format(checksum) + ext
-    return filename(f)
-
-
 def reg_src(f: str) -> str:
     global _BUILDER
     if _BUILDER:
@@ -243,78 +280,42 @@ def reg_src(f: str) -> str:
     return f
 
 
-def is_fresh(f: str, *deps) -> bool:
+def output(name: str, build_fn: Callable[[str], None]) -> str:
     global _BUILDER
-
-    if _BUILDER:
-        _BUILDER.reg_out(f)
-
-    try:
-        mtime = os.path.getmtime(f)
-    except FileNotFoundError:
-        return False
-
-    if not deps and _BUILDER and _BUILDER.current_src_files():
-        deps = _BUILDER.current_src_files()
-
-    for dep in deps:
-        try:
-            dep_mtime = os.path.getmtime(dep)
-            if mtime < dep_mtime:
-                return False
-        except FileNotFoundError:
-            pass
-
-    return True
+    if not _BUILDER:
+        raise RuntimeError('No builder')
+    return _BUILDER.output(name, build_fn)
 
 
-def set_default_builder(modules, temp_dir='tmp'):
+def builder_session():
     global _BUILDER
-    if _BUILDER and _BUILDER.has_task:
-        raise RuntimeError('set_default_builder() is not allowed within a task')
-
-    _BUILDER = Builder(modules, temp_dir=temp_dir)
+    if not _BUILDER:
+        raise RuntimeError('No builder')
+    return _BUILDER.session()
 
 
 def set_constant(name: str, val):
     global _BUILDER
     if not _BUILDER:
-        raise RuntimeError('There is no default builder set')
-
+        raise RuntimeError('No builder')
+    if _BUILDER.is_running:
+        raise RuntimeError('set_constant() is not allowed within running builder')
     _BUILDER.set_constant(name, val)
 
 
-def compile(src_files_glob: str, out_ext: str, transform: Callable[[List[str], str], None]) -> str:
-    import glob
-
-    src_files = glob.glob(src_files_glob)
-    if not src_files:
-        raise RuntimeError(f'No files matching {src_files_glob}')
-
-    for src in src_files:
-        reg_src(src)
-
-    if len(src_files) == 1:
-        out_name = src_files[0]
-    else:
-        out_name = os.path.dirname(src_files[0])
-
-    out_name, _ = os.path.splitext(out_name)
-    out_file = output(out_name + out_ext)
-
-    if not is_fresh(out_file):
-        transform(src_files, out_file)
-
-    return out_file
+def set_builder(modules, temp_dir='tmp'):
+    global _BUILDER
+    if _BUILDER and _BUILDER.is_running:
+        raise RuntimeError('set_builder() is not allowed within running builder')
+    _BUILDER = Builder(modules, temp_dir=temp_dir)
 
 
 __all__ = [
     'Builder',
     'task',
-    'filename',
+    'reg_src',
     'output',
-    'is_fresh',
-    'set_default_builder',
+    'builder_session',
     'set_constant',
-    'compile'
+    'set_builder'
 ]

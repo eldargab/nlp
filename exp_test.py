@@ -1,18 +1,17 @@
 #%%
-from builder import *
+from ipython_setup import aimport
+aimport('util, exp, builder')
+
+# %%
 from exp import *
-import dask.dataframe as dd
-import pandas as pd
-import util
 
-
-set_default_builder(globals())
-
+set_builder(globals())
 
 @task
 def csv_dataset():
     return 'data/energodata/*.csv'
 
-
 # %%
 groups_summary()
+
+# %%

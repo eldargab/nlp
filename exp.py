@@ -40,7 +40,7 @@ def parquet_dataset() -> str:
     filename = os.path.basename(os.path.splitext(filename)[0]) + '.parquet'
 
     def to_parquet(out):
-        dd.read_csv(csv_files, blocksize=None, sample=False, **options).to_parquet(out)
+        dd.read_csv(csv_files, blocksize=None, sample=False, **options).to_parquet(out, compression='gzip')
 
     return output(filename, to_parquet)
 

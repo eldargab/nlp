@@ -234,6 +234,8 @@ class Builder:
         prefix, ext = os.path.splitext(path)
         filename = prefix + '-' + '{:x}'.format(crc) + ext
 
+        self._current_task.output_files.append(filename)
+
         if os.path.exists(filename):
             return filename
 
@@ -245,7 +247,6 @@ class Builder:
             raise RuntimeError(f'Dependencies of task {self._current_task.id} have changed after output() invocation')
 
         os.rename(temp_file, filename)
-        self._current_task.output_files.append(filename)
         return filename
 
 

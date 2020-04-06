@@ -231,8 +231,12 @@ class Builder:
 
         crc = self._current_task.complete_crc()
         path = os.path.abspath(os.path.join(self.temp_dir, name))
-        prefix, ext = os.path.splitext(path)
-        filename = prefix + '-' + '{:x}'.format(crc) + ext
+
+        if crc:
+            prefix, ext = os.path.splitext(path)
+            filename = prefix + '-' + '{:x}'.format(crc) + ext
+        else:
+            filename = path
 
         self._current_task.output_files.append(filename)
 
@@ -288,6 +292,12 @@ def output(name: str, build_fn: Callable[[str], None]) -> str:
     return _BUILDER.output(name, build_fn)
 
 
+def temp(filename: str) -> str:
+    global _BUILDER
+    temp_dir = _BUILDER.temp_dir if _BUILDER else 'tmp'
+    return os.path.join(temp_dir, filename)
+
+
 def builder_session():
     global _BUILDER
     if not _BUILDER:
@@ -316,6 +326,7 @@ __all__ = [
     'task',
     'reg_src',
     'output',
+    'temp',
     'builder_session',
     'set_constant',
     'set_builder'

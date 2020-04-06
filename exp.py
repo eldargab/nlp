@@ -29,8 +29,8 @@ def parquet_dataset() -> str:
     if not csv_files:
         raise RuntimeError('No files matched glob ' + csv_glob)
 
-    for csv_file in csv_files:
-        reg_src(csv_file)
+    # for csv_file in csv_files:
+    #     reg_src(csv_file)
 
     if len(csv_files) > 1:
         filename = os.path.dirname(csv_files[0])

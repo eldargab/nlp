@@ -8,18 +8,35 @@ aimport('ft')
 # %%
 from typing import Union, Mapping
 from exp import *
-from util import Ragged
 from dictionary import Dictionary
 
 import numpy as np
 import pandas as pd
 import dask.dataframe as dd
+import torch
+import util
+
+
+@task
+def experiment_name():
+    return 'fasttext-energodata-2018'
 
 
 # %%
 @task
-def csv_dataset():
-    return 'data/energodata/*.csv'
+def raw_dataset():
+    def to_parquet(out):
+        dd.read_csv(
+            'data/energodata/*.csv',
+            blocksize=None,
+            sample=False,
+            parse_dates=['Date'],
+            cache_dates=True,
+            dtype={'Group': pd.CategoricalDtype()}
+        ).to_parquet(out)
+
+    file = output('energodata.parquet', to_parquet)
+    return dd.read_parquet(file)
 
 
 # %%
@@ -34,6 +51,12 @@ def dataset():
     ds = ds[~ds.Group.isin(stop_groups)]
     ds['Group'] = ds.Group.map(lambda g: 'Сигма' if g == 'АСУИИиК' else g).astype('category')
     return ds
+
+
+@task
+def lite_dataset() -> pd.DataFrame:
+    ds = dataset()
+    return ds[['Date', 'Group']].compute()
 
 
 # %%
@@ -57,11 +80,10 @@ def get_groups() -> Mapping[str, Union[int, float]]:
 # %%
 @task
 def get_labels() -> pd.Series:
-    groups = get_groups()
-    ds = lite_dataset()
-    labels = ds['Group'].copy()
+    ds = dataset()
+    labels = ds.Group.compute()
     labels.cat.add_categories('other', inplace=True)
-    labels[~labels.isin(groups)] = 'other'
+    labels[~labels.isin(get_groups())] = 'other'
     return labels
 
 
@@ -72,8 +94,7 @@ def train_test_split():
     rng = np.random.default_rng(0)
     idx = rng.permutation(length)
     train_size = round(length * 0.9)
-    test_size = length - train_size
-    return idx[0:train_size], idx[test_size:]
+    return idx[0:train_size], idx[train_size:]
 
 
 # %%
@@ -96,19 +117,36 @@ def make_features():
 
     def ragged(subset):
         sizes = lengths.iloc[subset]
-        x = np.empty(sizes.sum(), dtype=np.int32)
+        x = np.empty(sizes.sum(), dtype=np.long)
         s = 0
         for doc in tokens.iloc[subset]:
             e = s + len(doc)
             x[s:e] = doc
             s = e
-        return Ragged(x, sizes.to_numpy())
+        return util.Ragged(x, sizes.to_numpy())
 
     return ragged(train_idx), labels.iloc[train_idx], ragged(test_idx), labels.iloc[test_idx], dic
 
 
 # %%
-def save_features(filename: str):
-    import joblib
-    features = make_features()
-    joblib.dump(features, temp(filename))
+@task
+def train_model():
+    import ft
+
+    x_train_ragged, y_train, _, _, dic = get_features()
+
+    x = torch.tensor(x_train_ragged.values, dtype=torch.long)
+    y = torch.tensor(y_train.cat.codes.to_numpy(), dtype=torch.long)
+
+    @util.iterable_generator
+    def batches():
+        sizes = x_train_ragged.sizes
+        offset = 0
+        for i in range(0, len(y) - 1):
+            end = offset + sizes[i]
+            yield x[offset:end].view(1, -1), y[i:i+1]
+            offset = end
+
+    model = ft.FastText(dict_size=dic.size, dict_dim=100, n_labels=len(y_train.cat.categories), padding_idx=0)
+    ft.train(model, batches())
+    return model

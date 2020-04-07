@@ -10,9 +10,9 @@ Y = Tensor  # 1-D Tensor of label indexes
 
 
 class FastText(nn.Module):
-    def __init__(self, dict_size: int, dict_dim: int, n_labels: int):
+    def __init__(self, dict_size: int, dict_dim: int, n_labels: int, padding_idx=None):
         super(FastText, self).__init__()
-        self.embedding = nn.Embedding(dict_size, dict_dim, sparse=True)
+        self.embedding = nn.Embedding(dict_size, dict_dim, padding_idx=padding_idx, sparse=True)
         self.linear = nn.Linear(dict_dim, n_labels)
 
     def forward(self, input: Input) -> Tensor:
@@ -20,7 +20,7 @@ class FastText(nn.Module):
         :return: Tensor of shape `(number_of_samples, n_labels)
         """
         x = self.embedding(input)
-        x = x.mean(dim=len(x.shape) - 1)
+        x = x.mean(dim=1)
         x = self.linear(x)
         return x
 

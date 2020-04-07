@@ -254,6 +254,13 @@ class Builder:
         return filename
 
 
+    def reset(self):
+        if self._running:
+            raise RuntimeError("Builder can't be reset while running")
+        else:
+            self._state.clear()
+
+
     @property
     def is_running(self) -> bool:
         return self._running
@@ -305,6 +312,12 @@ def builder_session():
     return _BUILDER.session()
 
 
+def reset_builder():
+    global _BUILDER
+    if _BUILDER:
+        _BUILDER.reset()
+
+
 def set_constant(name: str, val):
     global _BUILDER
     if not _BUILDER:
@@ -328,6 +341,7 @@ __all__ = [
     'output',
     'temp',
     'builder_session',
+    'reset_builder',
     'set_constant',
     'set_builder'
 ]

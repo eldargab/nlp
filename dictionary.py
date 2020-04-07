@@ -18,9 +18,9 @@ STANDARD_TOKENS = [
 
 class Dictionary:
     def __init__(self):
-        self.dict = {}
-        self.doc_counts = []
-        self.doc_count = 0
+        self._dict = {}
+        self._doc_counts = []
+        self._doc_count = 0
         self._add_standard_tokens()
 
     def _add_standard_tokens(self):
@@ -28,42 +28,46 @@ class Dictionary:
             self._add_new_token(tok)
 
     def reset(self):
-        self.dict.clear()
-        self.doc_counts.clear()
-        self.doc_count = 0
+        self._dict.clear()
+        self._doc_counts.clear()
+        self._doc_count = 0
         self._add_standard_tokens()
 
     def fit(self, doc: str):
         for tok in _tokens(doc):
-            idx = self.dict.get(tok, -1)
+            idx = self._dict.get(tok, -1)
             if idx < 0:
                 self._add_new_token(tok)
             else:
-                self.doc_counts[idx] += 1
-        self.doc_count += 1
+                self._doc_counts[idx] += 1
+        self._doc_count += 1
 
     def _add_new_token(self, tok):
-        self.dict[tok] = len(self.dict)
-        self.doc_counts.append(1)
+        self._dict[tok] = len(self._dict)
+        self._doc_counts.append(1)
 
     def limit(self, min_docs: int = 5):
         length = 0
         new_counts = []
         deleted = set()
 
-        for tok, idx in self.dict.items():
-            if self.doc_counts[idx] < min_docs and idx >= len(STANDARD_TOKENS):
+        for tok, idx in self._dict.items():
+            if self._doc_counts[idx] < min_docs and idx >= len(STANDARD_TOKENS):
                 deleted.add(tok)
             else:
-                new_counts.append(self.doc_counts[idx])
-                self.dict[tok] = length
+                new_counts.append(self._doc_counts[idx])
+                self._dict[tok] = length
                 length += 1
 
         for tok in deleted:
-            del self.dict[tok]
+            del self._dict[tok]
 
-        self.doc_counts = new_counts
+        self._doc_counts = new_counts
 
     def __call__(self, doc: str) -> Iterable[int]:
         for tok in _tokens(doc):
-            yield self.dict.get(tok, 0)
+            yield self._dict.get(tok, 0)
+
+    @property
+    def size(self):
+        return len(self._dict)

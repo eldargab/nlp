@@ -1,9 +1,9 @@
 from collections import OrderedDict
-from typing import NamedTuple, Any
-
+from typing import NamedTuple, Any, Callable, Iterator, TypeVar, Iterable
 import numpy as np
 import pandas as pd
 import dask.dataframe as dd
+T = TypeVar('T')
 
 
 def frequencies(size_series: pd.Series):
@@ -60,8 +60,20 @@ def describe_results(r: pd.DataFrame):
 
 
 class Ragged(NamedTuple):
-    value: Any
-    size: Any
+    values: Any
+    sizes: Any
+
+
+class IterableGenerator:
+    def __init__(self, f: Callable[[], Iterator[T]]):
+        self.f = f
+
+    def __iter__(self) -> Iterator[T]:
+        return self.f()
+
+
+def iterable_generator(f:  Callable[[], Iterator[T]]) -> Callable[[], Iterable[T]]:
+    return lambda: IterableGenerator(f)
 
 
 class ArrayBuilder:

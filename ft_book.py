@@ -6,7 +6,7 @@ set_builder(globals())
 aimport('ft')
 
 # %%
-from typing import Union, Mapping
+from typing import Union, Mapping, Tuple
 from exp import *
 from dictionary import Dictionary
 
@@ -15,6 +15,7 @@ import pandas as pd
 import dask.dataframe as dd
 import torch
 import util
+import ft
 
 
 @task
@@ -81,72 +82,108 @@ def get_groups() -> Mapping[str, Union[int, float]]:
 @task
 def get_labels() -> pd.Series:
     ds = dataset()
-    labels = ds.Group.compute()
+    labels = ds.Group.compute()  # type: pd.Series
     labels.cat.add_categories('other', inplace=True)
     labels[~labels.isin(get_groups())] = 'other'
+    labels.cat.remove_unused_categories(inplace=True)
     return labels
 
 
 # %%
-@task
-def train_test_split():
-    length = len(get_labels())
-    rng = np.random.default_rng(0)
-    idx = rng.permutation(length)
-    train_size = round(length * 0.9)
-    return idx[0:train_size], idx[train_size:]
+X = util.RaggedPaddedBatches
+Y = pd.Series
+Y_t = torch.Tensor
 
-
-# %%
 @task
-def make_features():
+def make_features() -> Tuple[Tuple[X, Y], Tuple[X, Y], Dictionary, pd.CategoricalDtype]:
     ds = dataset()
-    labels = get_labels()
-    train_idx, test_idx = train_test_split()
     text = ds.Title + '\n\n' + ds.Text  # type: dd.Series
 
     dic = Dictionary()
-    train_set = set(train_idx)
-    for idx, doc in enumerate(text):
-        if idx in train_set:
+    test_set = set()
+    rng = np.random.default_rng(0)
+    for idx, doc in text.iteritems():
+        is_test = rng.choice([0, 1], p=[0.9, 0.1])
+        if is_test:
+            test_set.add(idx)
+        else:
             dic.fit(doc)
     dic.limit()
 
-    tokens = text.map(lambda t: list(dic(t))).compute()  # type: pd.Series
-    lengths = tokens.map(len)
+    df = pd.DataFrame.from_dict({
+        'X': text.map(lambda t: list(dic(t))).compute(),
+        'Y': get_labels()
+    })
 
-    def ragged(subset):
-        sizes = lengths.iloc[subset]
-        x = np.empty(sizes.sum(), dtype=np.long)
-        s = 0
-        for doc in tokens.iloc[subset]:
-            e = s + len(doc)
-            x[s:e] = doc
-            s = e
-        return util.Ragged(x, sizes.to_numpy())
+    df['X_len'] = df.X.map(len)
+    df.sort_values(by='X_len', inplace=True)
+    del df['X_len']
 
-    return ragged(train_idx), labels.iloc[train_idx], ragged(test_idx), labels.iloc[test_idx], dic
+    test_data = df[df.index.isin(test_set)]
+    df.drop(test_set, inplace=True)
+    train_data = df
+
+    def to_ragged(data):
+        return util.RaggedPaddedBatches.from_list(data.X.values, batch_size=1), data.Y
+
+    return to_ragged(train_data), to_ragged(test_data), dic, df.Y.dtype
+
+
+def get_features() -> Tuple[Tuple[X, Y], Tuple[X, Y], Dictionary, pd.CategoricalDtype]:
+    return read_features() or make_features()
+
 
 
 # %%
 @task
-def train_model():
-    import ft
+def train_model() -> ft.FastText:
+    (x_train, y_train), _, dic, _ = get_features()
 
-    x_train_ragged, y_train, _, _, dic = get_features()
-
-    x = torch.tensor(x_train_ragged.values, dtype=torch.long)
     y = torch.tensor(y_train.cat.codes.to_numpy(), dtype=torch.long)
 
-    @util.iterable_generator
-    def batches():
-        sizes = x_train_ragged.sizes
-        offset = 0
-        for i in range(0, len(y) - 1):
-            end = offset + sizes[i]
-            yield x[offset:end].view(1, -1), y[i:i+1]
-            offset = end
-
     model = ft.FastText(dict_size=dic.size, dict_dim=100, n_labels=len(y_train.cat.categories), padding_idx=0)
-    ft.train(model, batches())
+
+    ft.train(model, x_train.shuffled_tensor_batches(y=y, dtype=torch.long))
+
     return model
+
+
+# %%
+def predict_prob(x: X) -> Y_t:
+    model = train_model()
+    return torch.stack([ft.predict_prob(model, b) for b in x.tensor_batches(dtype=torch.long)])
+
+
+def predict_by_best_prob(x: X) -> Y_t:
+    prob = predict_prob(x)
+    return prob.argmax(dim=1)
+
+
+@task
+def get_penalties() -> torch.Tensor:
+    cat_dtype = get_features()[3]
+    groups = get_groups()
+    penalty_series = cat_dtype.categories.map(lambda g: groups.get(g, 0))  # type: pd.Series
+    return torch.tensor(penalty_series.to_numpy(dtype=np.float))
+
+
+def predict(x: X) -> Y_t:
+    prob = predict_prob(x)
+    penalties = get_penalties()
+    score = prob + (prob - 1) * penalties
+    return score.argmax(dim=1)
+
+
+@task
+def test_set_prob() -> torch.Tensor:
+    x_test = get_features()[1][0]
+    return predict_prob(x_test)
+
+
+@task
+def test_set_predictions() -> pd.Series:
+    x_test, y_test = get_features()[1]
+    y = predict(x_test).numpy()
+    return pd.Series(y, index=y_test.index)
+
+# %%

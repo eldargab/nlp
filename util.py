@@ -1,8 +1,9 @@
 from collections import OrderedDict
-from typing import NamedTuple, Any, Callable, Iterator, TypeVar, Iterable
+from typing import Callable, Iterator, TypeVar, Iterable
+
 import numpy as np
 import pandas as pd
-import dask.dataframe as dd
+
 T = TypeVar('T')
 
 
@@ -59,11 +60,6 @@ def describe_results(r: pd.DataFrame):
     return s
 
 
-class Ragged(NamedTuple):
-    values: Any
-    sizes: Any
-
-
 class IterableGenerator:
     def __init__(self, f: Callable[[], Iterator[T]]):
         self.f = f
@@ -72,8 +68,8 @@ class IterableGenerator:
         return self.f()
 
 
-def iterable_generator(f:  Callable[[], Iterator[T]]) -> Callable[[], Iterable[T]]:
-    return lambda: IterableGenerator(f)
+def iterable_generator(f:  Callable[[], Iterator[T]]) -> Iterable[T]:
+    return IterableGenerator(f)
 
 
 class ArrayBuilder:
@@ -103,9 +99,87 @@ class ArrayBuilder:
 
     def end(self):
         data = self._data
-        data.resize((self._size,), refcheck=True)
+        data.resize((self._size,), refcheck=False)
         self._data = np.empty(0, dtype=data.dtype)
         self._size = 0
         self._cap = 0
         return data
 
+
+class RaggedPaddedBatches:
+    @staticmethod
+    def from_list(data, batch_size, padding_value=0, dtype=None, size_dtype=np.int):
+        batches_count = len(data) // batch_size
+        sizes = np.empty(batches_count * batch_size, dtype=size_dtype)
+        data_size = 0
+        for bi in range(0, batches_count):
+            start = bi * batch_size
+            end = start + batch_size
+            batch_item_size = max((len(data[i]) for i in range(start, end)), default=0)
+            data_size += batch_item_size * batch_size
+            sizes[start:end] = batch_size
+
+        data_array = np.empty(data_size, dtype=dtype if dtype else np.array(data[0]).dtype)
+        offset = 0
+        for i in range(0, batches_count * batch_size):
+            data_item = data[i]
+            size = sizes[i]
+            end = offset + size
+            item_end = offset+len(data_item)
+            data_array[offset:item_end] = data_item
+            if end > item_end:
+                data_array[item_end:end] = padding_value
+            offset = end
+
+        return RaggedPaddedBatches(data_array, sizes, batch_size)
+
+    def __init__(self, data, sizes, batch_size):
+        self._data = data
+        self._sizes = sizes
+        self._batch_size = batch_size
+
+    @property
+    def batch_size(self):
+        return self._batch_size
+
+    @property
+    def size(self):
+        return len(self._sizes)
+
+    @property
+    def batches_count(self):
+        return self.size // self.batch_size
+
+    def shuffled_tensor_batches(self, dtype=None, y=None):
+        import torch
+
+        rng = np.random.default_rng(0)
+        batches = rng.permutation(self.batches_count)
+        tensor = torch.tensor(self._data, dtype=dtype)
+
+        @iterable_generator
+        def iterable():
+            for batch in batches:
+                start = batch * self.batch_size
+                end = start + self.batch_size
+                x = tensor[start:end].view(self.batch_size, -1)
+                if y is None:
+                    yield x
+                else:
+                    yield x, y[start:end]
+
+        return iterable
+
+    def tensor_batches(self, dtype=None):
+        import torch
+
+        tensor = torch.tensor(self._data, dtype=dtype)
+
+        @iterable_generator
+        def iterable():
+            for batch in range(0, self.batches_count):
+                start = batch * self.batch_size
+                end = start + self.batch_size
+                yield tensor[start:end].view(self.batch_size, -1)
+
+        return iterable

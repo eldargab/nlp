@@ -11,14 +11,13 @@ def make_features():
     raise NotImplementedError()
 
 
-@task
-def get_features():
+def read_features():
     import joblib
     cache = temp(experiment_name() + '.features.pkl')
     try:
         return joblib.load(cache)
     except FileNotFoundError:
-        return make_features()
+        return None
 
 
 def save_features():

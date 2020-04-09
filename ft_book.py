@@ -6,8 +6,7 @@ set_builder(globals())
 aimport('ft')
 
 # %%
-from typing import Union, Mapping, Tuple, Any
-from exp import *
+from typing import Union, Mapping, Tuple
 from dictionary import Dictionary
 
 import numpy as np
@@ -16,12 +15,6 @@ import dask.dataframe as dd
 import torch
 import util
 import ft
-
-
-@task
-def experiment_name():
-    return 'fasttext-energodata-2018'
-
 
 # %%
 @task
@@ -54,12 +47,6 @@ def dataset():
     return ds
 
 
-@task
-def lite_dataset() -> pd.DataFrame:
-    ds = dataset()
-    return ds[['Date', 'Group']].compute()
-
-
 # %%
 @task
 def get_groups() -> Mapping[str, Union[int, float]]:
@@ -90,12 +77,8 @@ def get_labels() -> pd.Series:
 
 
 # %%
-X = util.RaggedPaddedBatches
-Y = pd.Series
-
-
 @task
-def make_features() -> Tuple[Tuple[X, Y], Tuple[X, Y], Dictionary]:
+def vectorized_dataset() -> Tuple[pd.DataFrame, pd.DataFrame, Dictionary]:
     ds = dataset()
     text = ds.Title + '\n\n' + ds.Text  # type: dd.Series
 
@@ -123,15 +106,22 @@ def make_features() -> Tuple[Tuple[X, Y], Tuple[X, Y], Dictionary]:
     df.drop(test_set, inplace=True)
     train_data = df
 
+    return train_data, test_data, dic
+
+
+# %%
+X = util.RaggedPaddedBatches
+Y = pd.Series
+
+@task
+def get_features() -> Tuple[Tuple[X, Y], Tuple[X, Y], Dictionary]:
+    train_data, test_data, dic = vectorized_dataset()
+
     def to_ragged(data):
         x = util.RaggedPaddedBatches.from_list(data.X.values, batch_size=5)
         return x, data.Y[0:x.size]
 
     return to_ragged(train_data), to_ragged(test_data), dic
-
-
-def get_features() -> Tuple[Tuple[X, Y], Tuple[X, Y], Dictionary]:
-    return read_features() or make_features()
 
 
 # %%
@@ -187,5 +177,16 @@ def test_set_performance():
     data = get_features()[1]
     return performance(data)
 
+
+def train_set_performance():
+    data = get_features()[0]
+    return performance(data)
+
+
 # %%
-test_set_performance()
+@task
+def lite_dataset() -> pd.DataFrame:
+    ds = dataset()
+    return ds[['Date', 'Group']].compute()
+
+# %%

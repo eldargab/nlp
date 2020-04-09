@@ -14,6 +14,7 @@ def make_features():
 def read_features():
     import joblib
     cache = temp(experiment_name() + '.features.pkl')
+    reg_src(cache)
     try:
         return joblib.load(cache)
     except FileNotFoundError:

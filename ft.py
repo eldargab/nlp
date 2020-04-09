@@ -26,9 +26,9 @@ class FastText(nn.Module):
 
 
 def train(model: FastText, batches: Iterable[Tuple[Input, Y]]):
-    optimizer = torch.optim.SGD(model.parameters(recurse=True), lr=0.2)
+    optimizer = torch.optim.SGD(model.parameters(recurse=True), lr=0.5)
     criterion = nn.CrossEntropyLoss(reduction='mean')
-    for epoch in range(1, 20):
+    for epoch in range(1, 10):
         loss_sum = 0
         no_batches = 0
         for x, y in batches:

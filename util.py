@@ -4,6 +4,7 @@ from typing import Callable, Iterator, TypeVar, Iterable
 import numpy as np
 import pandas as pd
 
+
 T = TypeVar('T')
 
 
@@ -29,13 +30,13 @@ def group_size_by_week(df: pd.DataFrame, group: str):
     return df[df.Group == group].resample('W-MON', on='Date').size()
 
 
-def describe_results(r: pd.DataFrame):
-    hits = r.Group == r.Guess
+def describe_results(group: pd.Series, guess):
+    hits = group == guess
     misses = ~hits
 
     stats = pd.DataFrame.from_dict(OrderedDict([
-        ('Group', r.Group),
-        ('Guess', r.Guess),
+        ('Group', group),
+        ('Guess', guess),
         ('Hit', hits),
         ('Miss', misses)
     ]))
@@ -56,6 +57,7 @@ def describe_results(r: pd.DataFrame):
     s.fillna(0, inplace=True)
     s['Tp'] = s.Tp.astype(int)
     s['Fp'] = s.Fp.astype(int)
+    s.drop('other', inplace=True)
 
     return s
 
@@ -110,20 +112,23 @@ class RaggedPaddedBatches:
     @staticmethod
     def from_list(data, batch_size, padding_value=0, dtype=None, size_dtype=np.int):
         batches_count = len(data) // batch_size
-        sizes = np.empty(batches_count * batch_size, dtype=size_dtype)
+        offsets = np.empty(batches_count + 1, dtype=size_dtype)
+        offsets[0] = 0
         data_size = 0
         for bi in range(0, batches_count):
+            offsets[bi] = data_size
             start = bi * batch_size
             end = start + batch_size
             batch_item_size = max((len(data[i]) for i in range(start, end)), default=0)
             data_size += batch_item_size * batch_size
-            sizes[start:end] = batch_size
+            offsets[bi + 1] = data_size
 
         data_array = np.empty(data_size, dtype=dtype if dtype else np.array(data[0]).dtype)
         offset = 0
         for i in range(0, batches_count * batch_size):
             data_item = data[i]
-            size = sizes[i]
+            bi = i // batch_size
+            size = (offsets[bi + 1] - offsets[bi]) // batch_size
             end = offset + size
             item_end = offset+len(data_item)
             data_array[offset:item_end] = data_item
@@ -131,11 +136,11 @@ class RaggedPaddedBatches:
                 data_array[item_end:end] = padding_value
             offset = end
 
-        return RaggedPaddedBatches(data_array, sizes, batch_size)
+        return RaggedPaddedBatches(data_array, offsets, batch_size)
 
-    def __init__(self, data, sizes, batch_size):
+    def __init__(self, data, offsets, batch_size):
         self._data = data
-        self._sizes = sizes
+        self._offsets = offsets
         self._batch_size = batch_size
 
     @property
@@ -143,12 +148,12 @@ class RaggedPaddedBatches:
         return self._batch_size
 
     @property
-    def size(self):
-        return len(self._sizes)
+    def batches_count(self):
+        return len(self._offsets) - 1
 
     @property
-    def batches_count(self):
-        return self.size // self.batch_size
+    def size(self):
+        return self.batches_count * self.batch_size
 
     def shuffled_tensor_batches(self, dtype=None, y=None):
         import torch
@@ -160,13 +165,15 @@ class RaggedPaddedBatches:
         @iterable_generator
         def iterable():
             for batch in batches:
-                start = batch * self.batch_size
-                end = start + self.batch_size
+                start = self._offsets[batch]
+                end = self._offsets[batch + 1]
                 x = tensor[start:end].view(self.batch_size, -1)
                 if y is None:
                     yield x
                 else:
-                    yield x, y[start:end]
+                    ys = batch * self.batch_size
+                    ye = ys + self.batch_size
+                    yield x, y[ys:ye]
 
         return iterable
 
@@ -178,8 +185,8 @@ class RaggedPaddedBatches:
         @iterable_generator
         def iterable():
             for batch in range(0, self.batches_count):
-                start = batch * self.batch_size
-                end = start + self.batch_size
+                start = self._offsets[batch]
+                end = self._offsets[batch + 1]
                 yield tensor[start:end].view(self.batch_size, -1)
 
         return iterable

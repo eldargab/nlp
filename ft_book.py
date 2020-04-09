@@ -6,7 +6,7 @@ set_builder(globals())
 aimport('ft')
 
 # %%
-from typing import Union, Mapping, Tuple
+from typing import Union, Mapping, Tuple, Any
 from exp import *
 from dictionary import Dictionary
 
@@ -92,7 +92,7 @@ def get_labels() -> pd.Series:
 # %%
 X = util.RaggedPaddedBatches
 Y = pd.Series
-Y_t = torch.Tensor
+
 
 @task
 def make_features() -> Tuple[Tuple[X, Y], Tuple[X, Y], Dictionary]:
@@ -124,7 +124,8 @@ def make_features() -> Tuple[Tuple[X, Y], Tuple[X, Y], Dictionary]:
     train_data = df
 
     def to_ragged(data):
-        return util.RaggedPaddedBatches.from_list(data.X.values, batch_size=5), data.Y
+        x = util.RaggedPaddedBatches.from_list(data.X.values, batch_size=5)
+        return x, data.Y[0:x.size]
 
     return to_ragged(train_data), to_ragged(test_data), dic
 
@@ -149,48 +150,41 @@ def train_model() -> ft.FastText:
 
 
 # %%
-def predict_prob(x: X) -> Y_t:
+def predict_prob(x: X):
     model = train_model()
-    return torch.cat([ft.predict_prob(model, b) for b in x.tensor_batches(dtype=torch.long)])
+    return torch.cat([ft.predict_prob(model, b) for b in x.tensor_batches(dtype=torch.long)]).numpy()
 
 
-def predict_by_best_prob(x: X) -> Y_t:
-    prob = predict_prob(x)
-    return prob.argmax(dim=1)
+def get_label_cat_type() -> pd.CategoricalDtype:
+    _, y_test = get_features()[1]
+    return y_test.dtype
 
 
 @task
-def get_penalties() -> torch.Tensor:
-    _, y_test = get_features()[1]
+def get_penalties():
     groups = get_groups()
-    penalty_series = y_test.cat.categories.map(lambda g: groups.get(g, 0))  # type: pd.Series
-    return torch.tensor(penalty_series.to_numpy(dtype=np.float))
+    cat_type = get_label_cat_type()
+    penalty_series = cat_type.categories.map(lambda g: groups.get(g, 0))  # type: pd.Series
+    return penalty_series.to_numpy(dtype=np.float)
 
 
-def predict(x: X) -> Y_t:
+def predict(x: X):
     prob = predict_prob(x)
     penalties = get_penalties()
     score = prob + (prob - 1) * penalties
-    return score.argmax(dim=1)
+    y = score.argmax(axis=1)
+    return pd.Categorical.from_codes(y, dtype=get_label_cat_type())
 
 
-@task
-def test_set_prob() -> torch.Tensor:
-    x_test = get_features()[1][0]
-    return predict_prob(x_test)
+def performance(data: Tuple[X, Y]):
+    x_test, y_test = data
+    guess = predict(x_test)
+    return util.describe_results(y_test, guess)
 
 
-def _to_y_series(y: Y_t, ys: Y):
-    return pd.Series(
-        pd.Categorical.from_codes(y.numpy(), dtype=ys.dtype),
-        index=ys.index
-    )
-
-
-@task
-def test_set_predictions() -> pd.Series:
-    x_test, y_test = get_features()[1]
-    y = predict(x_test)
-    return _to_y_series(y, y_test)
+def test_set_performance():
+    data = get_features()[1]
+    return performance(data)
 
 # %%
+test_set_performance()

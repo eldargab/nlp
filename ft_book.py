@@ -134,10 +134,11 @@ def get_features() -> Tuple[Tuple[X, Y], Tuple[X, Y], Dictionary]:
     return read_features() or make_features()
 
 
-
 # %%
 @task
 def train_model() -> ft.FastText:
+    reg_src_module(ft)
+
     (x_train, y_train), _, dic = get_features()
 
     y = torch.tensor(y_train.cat.codes.to_numpy(), dtype=torch.long)

@@ -292,6 +292,15 @@ def reg_src(f: str) -> str:
     return f
 
 
+def reg_src_module(m):
+    try:
+        file = m.__file__
+    except AttributeError:
+        file = None
+    if file:
+        reg_src(file)
+
+
 def output(name: str, build_fn: Callable[[str], None]) -> str:
     global _BUILDER
     if not _BUILDER:
@@ -338,6 +347,7 @@ __all__ = [
     'Builder',
     'task',
     'reg_src',
+    'reg_src_module',
     'output',
     'temp',
     'builder_session',

@@ -30,7 +30,11 @@ def group_size_by_week(df: pd.DataFrame, group: str):
     return df[df.Group == group].resample('W-MON', on='Date').size()
 
 
-def describe_results(group: pd.Series, guess):
+def f_score(p, r, beta=1):
+    return p * r * (1 + beta * beta) / (p * beta * beta + r)
+
+
+def describe_results(group: pd.Series, guess, f_score_beta=1):
     hits = group == guess
     misses = ~hits
 
@@ -49,16 +53,25 @@ def describe_results(group: pd.Series, guess):
     fp = stats.groupby(['Guess']).agg(Fp=pd.NamedAgg('Miss', 'sum'))
 
     s = s.join(fp, how='outer')
+    s.drop('other', inplace=True)
+    s.set_index(s.index.add_categories('Overall'), inplace=True)
+
+    overall_row = pd.DataFrame({
+        'Size': [len(group)],
+        'Tp': [s.Tp.sum()],
+        'Fp': [s.Fp.sum()]
+    }, index=['Overall'])
+
+    s = s.append(overall_row)
 
     s['Precision'] = (s.Tp / (s.Tp + s.Fp)).map(lambda x: round(100 * x, ndigits=1))
     s['Recall'] = (s.Tp / s.Size).map(lambda x: round(100 * x, ndigits=1))
+    s[f'F{f_score_beta}-score'] = f_score(s.Precision, s.Recall, beta=f_score_beta).map(lambda x: round(x, ndigits=1))
     s.sort_values(by='Size', ascending=False, inplace=True)
 
     s.fillna(0, inplace=True)
     s['Tp'] = s.Tp.astype(int)
     s['Fp'] = s.Fp.astype(int)
-    s.drop('other', inplace=True)
-
     return s
 
 

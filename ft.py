@@ -1,5 +1,6 @@
 import numpy as np
 import math
+import itertools
 
 
 def softmax(x: np.ndarray) -> np.ndarray:
@@ -33,3 +34,52 @@ class FastText:
         self.output_weights += np.outer(alpha, x)
         return -math.log(p[y])
 
+    def predict_prob(self, sentence_seq):
+        out = np.empty((len(sentence_seq), self.output_weights.shape[0]))
+        for i, s in enumerate(sentence_seq):
+            out[i] = self.forward(s)
+        return out
+
+    def loss(self, sentence_seq, y: np.ndarray):
+        prob = self.predict_prob(sentence_seq)
+        row_range = np.arange(0, len(y))
+        return -np.sum(np.log(prob[row_range, y])) / len(y)
+
+    def save_checkpoint(self):
+        return self.embedding.copy(), self.output_weights.copy()
+
+    def restore_checkpoint(self, checkpoint):
+        self.embedding = checkpoint[0].copy()
+        self.output_weights = checkpoint[1].copy()
+
+
+def train(sentence_seq, y: np.ndarray, dict_size: int, n_labels: int, model_idx: int, models_count: int) -> FastText:
+    model = FastText(dict_size=dict_size, dict_dim=100, n_labels=n_labels)
+    n_samples = len(y)
+
+    vset_size = n_samples // models_count
+    vset_start = model_idx * vset_size
+    vset_end = vset_start + vset_size
+    vset_x = sentence_seq[vset_start:vset_end]
+    vset_y = y[vset_start:vset_end]
+
+    prev_vset_loss = None
+    prev_checkpoint = None
+
+    for epoch in range(0, 30):
+        loss = 0.0
+
+        for i in itertools.chain(range(0, vset_start), range(vset_end, n_samples)):
+            loss += model.backward(sentence_seq[i], y[i], lr=0.2)
+
+        loss = loss / n_samples
+        vset_loss = model.loss(vset_x, vset_y)
+        print(f'model: {model_idx}, epoch: {epoch}, loss: {round(loss, 2)}, vset loss: {round(vset_loss, 2)}')
+        if prev_vset_loss is not None and prev_vset_loss < vset_loss:
+            model.restore_checkpoint(prev_checkpoint)
+            break
+        else:
+            prev_vset_loss = vset_loss
+            prev_checkpoint = model.save_checkpoint()
+
+    return model

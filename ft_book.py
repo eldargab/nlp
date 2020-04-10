@@ -12,7 +12,7 @@ from dictionary import Dictionary
 import numpy as np
 import pandas as pd
 import dask.dataframe as dd
-import torch
+import dask
 import util
 import ft
 
@@ -49,19 +49,19 @@ def dataset():
 
 # %%
 @task
-def get_groups() -> Mapping[str, Union[int, float]]:
+def get_groups() -> Mapping[str, float]:
     return {
-        'НСИ': 1,
-        'МНСИ': 1,
-        'АС УиО SAPFI': 2,
-        'АС УиО SAPAA': 2,
-        'АС УиО SAPCO': 2,
-        'АС УиО SAPNU': 2,
-        'АСУ-Казначейство': 2,
-        'КИСУ Закупки': 2,
-        'ЦИУС-ЗУП': 2,
-        'Внутренней ИТ-инфраструктуры': 2,
-        'Сигма': 4
+        'НСИ': 4,
+        'МНСИ': 4,
+        'АС УиО SAPFI': 9,
+        'АС УиО SAPAA': 9,
+        'АС УиО SAPCO': 9,
+        'АС УиО SAPNU': 9,
+        'АСУ-Казначейство': 9,
+        'КИСУ Закупки': 9,
+        'ЦИУС-ЗУП': 9,
+        'Внутренней ИТ-инфраструктуры': 19,
+        'Сигма': 99
     }
 
 
@@ -99,10 +99,11 @@ def vectorized_dataset() -> Tuple[pd.DataFrame, pd.DataFrame, Dictionary]:
     })
 
     test_data = df[df.index.isin(test_set)]
-    df.drop(test_set, inplace=True)
-    train_data = df
 
-    return train_data, test_data, dic
+    df.drop(test_set, inplace=True)
+    df = df.sample(frac=1)
+
+    return df, test_data, dic
 
 
 # %%
@@ -126,31 +127,29 @@ def get_labels_count():
 
 # %%
 @task
-def train_model() -> ft.FastText:
+def train_model():
+    import dask.multiprocessing
+
     reg_src_module(ft)
 
     (x_train, y_train), _, dic = get_features()
+    n_labels = get_labels_count()
 
-    x, y = x_train.to_numpy(), y_train.cat.codes.to_numpy()
+    x = dask.delayed(x_train.to_numpy())
+    y = dask.delayed(y_train.cat.codes.to_numpy())
+    train = dask.delayed(ft.train)
 
-    model = ft.FastText(dict_size=dic.size, dict_dim=100, n_labels=get_labels_count())
+    with dask.config.set(scheduler='processes'):
+        models = dask.compute([train(x, y, dic.size, n_labels, idx, 10) for idx in range(0, 10)])[0]
 
-    for epoch in range(0, 10):
-        loss = 0.0
-        for i in range(0, len(y)):
-            loss += model.backward(x[i], y[i], lr=0.2)
-        print(f'epoch loss: {loss / len(y)}')
-
-    return model
+    return util.EnsembleModel(models)
+    # return ft.train(x_train.to_numpy(), y_train.cat.codes.to_numpy(), dic.size, n_labels, 0, 10)
 
 
 # %%
 def predict_prob(x: X) -> np.ndarray:
     model = train_model()
-    out = np.empty((len(x), get_labels_count()))
-    for i, s in enumerate(x):
-        out[i] = model.forward(s)
-    return out
+    return model.predict_prob(x)
 
 
 @task
@@ -163,8 +162,9 @@ def get_penalties() -> np.ndarray:
 
 def predict(x: X):
     prob = predict_prob(x)
-    penalties = get_penalties()
-    score = prob + (prob - 1) * penalties
+    # penalties = get_penalties()
+    # score = prob + (prob - 1) * penalties
+    score = prob
     y = score.argmax(axis=1)
     return pd.Categorical.from_codes(y, dtype=get_label_cat_type())
 
@@ -175,11 +175,13 @@ def performance(data: Tuple[X, Y]):
     return util.describe_results(y_test, guess)
 
 
+@task
 def test_set_performance():
     data = get_features()[1]
     return performance(data)
 
 
+@task
 def train_set_performance():
     data = get_features()[0]
     return performance(data)
@@ -192,3 +194,4 @@ def lite_dataset() -> pd.DataFrame:
     return ds[['Date', 'Group']].compute()
 
 # %%
+test_set_performance()

@@ -203,3 +203,11 @@ class RaggedPaddedBatches:
                 yield tensor[start:end].view(self.batch_size, -1)
 
         return iterable
+
+
+class EnsembleModel:
+    def __init__(self, models):
+        self.models = models
+
+    def predict_prob(self, x):
+        return np.mean([m.predict_prob(x) for m in self.models], axis=0)

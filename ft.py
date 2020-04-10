@@ -1,48 +1,35 @@
-from typing import Iterable, Tuple
-from torch import Tensor
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+import numpy as np
+import math
 
 
-Input = Tensor  # Tensor of word indexes of shape `(number_of_samples, sentence_length)`
-Y = Tensor  # 1-D Tensor of label indexes
+def softmax(x: np.ndarray) -> np.ndarray:
+    """
+    :param x: 1-D vector of softmax weights
+    :return: 1-D vector of probabilities
+    """
+    x = x - np.max(x)
+    e = np.exp(x)
+    s = np.sum(e)
+    return e / s
 
 
-class FastText(nn.Module):
-    def __init__(self, dict_size: int, dict_dim: int, n_labels: int, padding_idx=None):
-        super(FastText, self).__init__()
-        self.embedding = nn.Embedding(dict_size, dict_dim, padding_idx=padding_idx, sparse=True)
-        self.linear = nn.Linear(dict_dim, n_labels)
+class FastText:
+    def __init__(self, dict_size: int, dict_dim: int, n_labels: int,):
+        self.embedding = np.random.default_rng().uniform(-1.0 / dict_dim, 1.0 / dict_dim, (dict_size, dict_dim))
+        self.embedding[0] = 0
+        self.output_weights = np.zeros((n_labels, dict_dim))
 
-    def forward(self, input: Tensor) -> Tensor:
-        """
-        :return: Tensor of shape `(number_of_samples, n_labels)
-        """
-        x = self.embedding(input)
-        x = x.mean(dim=1)
-        x = self.linear(x)
-        return x
+    def forward(self, sentence: np.ndarray) -> np.ndarray:
+        x = np.mean(self.embedding[sentence], axis=0)
+        x = np.matmul(self.output_weights, x)
+        return softmax(x)
 
+    def backward(self, sentence: np.ndarray, y: int, lr) -> float:
+        x = np.mean(self.embedding[sentence], axis=0)
+        p = softmax(np.matmul(self.output_weights, x))
+        alpha = p * (-1.0 * lr)
+        alpha[y] = (1 - p[y]) * lr
+        self.embedding[sentence] += np.matmul(alpha, self.output_weights) / len(sentence)
+        self.output_weights += np.outer(alpha, x)
+        return -math.log(p[y])
 
-def train(model: FastText, batches: Iterable[Tuple[Input, Y]]):
-    optimizer = torch.optim.SGD(model.parameters(recurse=True), lr=0.5)
-    criterion = nn.CrossEntropyLoss(reduction='mean')
-    for epoch in range(1, 10):
-        loss_sum = 0
-        no_batches = 0
-        for x, y in batches:
-            optimizer.zero_grad()
-            output = model(x)
-            loss = criterion(output, y)
-            loss.backward()
-            optimizer.step()
-            loss_sum += loss.item()
-            no_batches += 1
-        print(f'epoch loss: {no_batches and (loss_sum / no_batches)}')
-
-
-def predict_prob(model: FastText, input: Input) -> Tensor:
-    with torch.no_grad():
-        x = model(input)
-        return F.softmax(x, dim=1)

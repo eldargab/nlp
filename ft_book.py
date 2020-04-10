@@ -94,13 +94,9 @@ def vectorized_dataset() -> Tuple[pd.DataFrame, pd.DataFrame, Dictionary]:
     dic.limit()
 
     df = pd.DataFrame.from_dict({
-        'X': text.map(lambda t: list(dic(t))).compute(),
+        'X': text.map(lambda t: np.fromiter(dic(t), dtype=np.int32)).compute(),
         'Y': get_labels()
     })
-
-    df['X_len'] = df.X.map(len)
-    df.sort_values(by='X_len', inplace=True)
-    del df['X_len']
 
     test_data = df[df.index.isin(test_set)]
     df.drop(test_set, inplace=True)
@@ -110,18 +106,22 @@ def vectorized_dataset() -> Tuple[pd.DataFrame, pd.DataFrame, Dictionary]:
 
 
 # %%
-X = util.RaggedPaddedBatches
+X = pd.Series
 Y = pd.Series
 
 @task
 def get_features() -> Tuple[Tuple[X, Y], Tuple[X, Y], Dictionary]:
     train_data, test_data, dic = vectorized_dataset()
+    return (train_data.X, train_data.Y), (test_data.X, test_data.Y), dic
 
-    def to_ragged(data):
-        x = util.RaggedPaddedBatches.from_list(data.X.values, batch_size=5)
-        return x, data.Y[0:x.size]
 
-    return to_ragged(train_data), to_ragged(test_data), dic
+def get_label_cat_type() -> pd.CategoricalDtype:
+    _, y_test = get_features()[1]
+    return y_test.dtype
+
+
+def get_labels_count():
+    return len(get_label_cat_type().categories)
 
 
 # %%
@@ -131,32 +131,30 @@ def train_model() -> ft.FastText:
 
     (x_train, y_train), _, dic = get_features()
 
-    y = torch.tensor(y_train.cat.codes.to_numpy(), dtype=torch.long)
+    x, y = x_train.to_numpy(), y_train.cat.codes.to_numpy()
 
-    model = ft.FastText(dict_size=dic.size, dict_dim=100, n_labels=len(y_train.cat.categories), padding_idx=0)
+    model = ft.FastText(dict_size=dic.size, dict_dim=100, n_labels=get_labels_count())
 
-    import torch.jit as jit
-    with jit.optimized_execution(True):
-        model = jit.trace(model, (torch.randint(low=0, high=dic.size, size=(10, 100), dtype=torch.long),))
-
-    ft.train(model, x_train.shuffled_tensor_batches(y=y, dtype=torch.long))
+    for epoch in range(0, 10):
+        loss = 0.0
+        for i in range(0, len(y)):
+            loss += model.backward(x[i], y[i], lr=0.2)
+        print(f'epoch loss: {loss / len(y)}')
 
     return model
 
 
 # %%
-def predict_prob(x: X):
+def predict_prob(x: X) -> np.ndarray:
     model = train_model()
-    return torch.cat([ft.predict_prob(model, b) for b in x.tensor_batches(dtype=torch.long)]).numpy()
-
-
-def get_label_cat_type() -> pd.CategoricalDtype:
-    _, y_test = get_features()[1]
-    return y_test.dtype
+    out = np.empty((len(x), get_labels_count()))
+    for i, s in enumerate(x):
+        out[i] = model.forward(s)
+    return out
 
 
 @task
-def get_penalties():
+def get_penalties() -> np.ndarray:
     groups = get_groups()
     cat_type = get_label_cat_type()
     penalty_series = cat_type.categories.map(lambda g: groups.get(g, 0))  # type: pd.Series

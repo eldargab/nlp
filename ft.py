@@ -15,7 +15,7 @@ class FastText(nn.Module):
         self.embedding = nn.Embedding(dict_size, dict_dim, padding_idx=padding_idx, sparse=True)
         self.linear = nn.Linear(dict_dim, n_labels)
 
-    def forward(self, input: Input) -> Tensor:
+    def forward(self, input: Tensor) -> Tensor:
         """
         :return: Tensor of shape `(number_of_samples, n_labels)
         """

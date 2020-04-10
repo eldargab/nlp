@@ -18,7 +18,7 @@ import ft
 
 # %%
 @task
-def raw_dataset():
+def raw_dataset() -> dd.DataFrame:
     def to_parquet(out):
         dd.read_csv(
             'data/energodata/*.csv',
@@ -134,6 +134,10 @@ def train_model() -> ft.FastText:
     y = torch.tensor(y_train.cat.codes.to_numpy(), dtype=torch.long)
 
     model = ft.FastText(dict_size=dic.size, dict_dim=100, n_labels=len(y_train.cat.categories), padding_idx=0)
+
+    import torch.jit as jit
+    with jit.optimized_execution(True):
+        model = jit.trace(model, (torch.randint(low=0, high=dic.size, size=(10, 100), dtype=torch.long),))
 
     ft.train(model, x_train.shuffled_tensor_batches(y=y, dtype=torch.long))
 

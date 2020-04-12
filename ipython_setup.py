@@ -11,4 +11,4 @@ def aimport(s: str):
 
 
 autoreload()
-aimport('util, exp, builder')
+aimport('util, datasets, exp, builder')

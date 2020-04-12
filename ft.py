@@ -16,9 +16,10 @@ def softmax(x: np.ndarray) -> np.ndarray:
 
 class FastText:
     def __init__(self, dict_size: int, dict_dim: int, n_labels: int,):
-        self.embedding = np.random.default_rng().uniform(-1.0 / dict_dim, 1.0 / dict_dim, (dict_size, dict_dim))
+        rng = np.random.default_rng()
+        self.embedding = rng.uniform(-1.0 / dict_dim, 1.0 / dict_dim, (dict_size, dict_dim))
         self.embedding[0] = 0
-        self.output_weights = np.zeros((n_labels, dict_dim))
+        self.output_weights = rng.uniform(-1.0 / dict_dim, 1.0 / dict_dim, (n_labels, dict_dim))
 
     def forward(self, sentence: np.ndarray) -> np.ndarray:
         x = np.mean(self.embedding[sentence], axis=0)
@@ -40,6 +41,10 @@ class FastText:
             out[i] = self.forward(s)
         return out
 
+    def predict(self, sentence_seq):
+        prob = self.predict_prob(sentence_seq)
+        return prob.argmax(axis=1)
+
     def loss(self, sentence_seq, y: np.ndarray):
         prob = self.predict_prob(sentence_seq)
         row_range = np.arange(0, len(y))
@@ -53,15 +58,14 @@ class FastText:
         self.output_weights = checkpoint[1].copy()
 
 
-def train(sentence_seq, y: np.ndarray, dict_size: int, n_labels: int, model_idx: int, models_count: int) -> FastText:
+def train(sentence_seq, y: np.ndarray, dict_size: int, n_labels: int, model_idx: int = 0) -> FastText:
     model = FastText(dict_size=dict_size, dict_dim=100, n_labels=n_labels)
     n_samples = len(y)
+    permutation = np.random.default_rng().permutation(n_samples)
 
-    vset_size = n_samples // models_count
-    vset_start = model_idx * vset_size
-    vset_end = vset_start + vset_size
-    vset_x = sentence_seq[vset_start:vset_end]
-    vset_y = y[vset_start:vset_end]
+    vset_size = n_samples // 5
+    vset_x = sentence_seq[0:vset_size]
+    vset_y = y[0:vset_size]
 
     prev_vset_loss = None
     prev_checkpoint = None
@@ -69,8 +73,8 @@ def train(sentence_seq, y: np.ndarray, dict_size: int, n_labels: int, model_idx:
     for epoch in range(0, 30):
         loss = 0.0
 
-        for i in itertools.chain(range(0, vset_start), range(vset_end, n_samples)):
-            loss += model.backward(sentence_seq[i], y[i], lr=0.2)
+        for i in range(vset_size, n_samples):
+            loss += model.backward(sentence_seq[permutation[i]], y[permutation[i]], lr=0.2)
 
         loss = loss / n_samples
         vset_loss = model.loss(vset_x, vset_y)

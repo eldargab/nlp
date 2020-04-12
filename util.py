@@ -205,9 +205,33 @@ class RaggedPaddedBatches:
         return iterable
 
 
+class ProbThresholdModel:
+    def __init__(self, model, penalties):
+        self.model = model
+        self.penalties = penalties
+
+    def predict(self, x) -> np.ndarray:
+        prob = self.model.predict_prob(x)
+        score = prob + (prob - 1) * self.penalties
+        return score.argmax(axis=1)
+
+    def predict_prob(self, x) -> np.ndarray:
+        return self.model.predict_prob(x)
+
+
+
 class EnsembleModel:
     def __init__(self, models):
         self.models = models
 
-    def predict_prob(self, x):
+    def predict(self, x) -> np.ndarray:
+        y = np.array([m.predict(x) for m in self.models], order='F')
+        n_labels, n_samples = y.shape
+        out = np.empty(n_samples, dtype=np.int)
+        for i in range(0, n_samples):
+            votes = np.bincount(y[:, i], minlength=n_labels)
+            out[i] = votes.argmax()
+        return out
+
+    def predict_prob(self, x) -> np.ndarray:
         return np.mean([m.predict_prob(x) for m in self.models], axis=0)

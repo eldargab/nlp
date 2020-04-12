@@ -64,8 +64,9 @@ def train(sentence_seq, y: np.ndarray, dict_size: int, n_labels: int, model_idx:
     permutation = np.random.default_rng().permutation(n_samples)
 
     vset_size = n_samples // 5
-    vset_x = sentence_seq[0:vset_size]
-    vset_y = y[0:vset_size]
+    vset_idx = permutation[0:vset_size]
+    vset_x = sentence_seq[vset_idx]
+    vset_y = y[vset_idx]
 
     prev_vset_loss = None
     prev_checkpoint = None

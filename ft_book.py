@@ -97,10 +97,10 @@ def get_features() -> Tuple[Tuple[X, Y], Tuple[X, Y], Dictionary]:
     x_test = x[test_set_mask]
     y_test = y[test_set_mask]
 
-    x.drop(test_set_mask, inplace=True)
-    y.drop(test_set_mask, inplace=True)
+    x_train = x[~test_set_mask]
+    y_train = y[~test_set_mask]
 
-    return (x, y), (x_test, y_test), dic
+    return (x_train, y_train), (x_test, y_test), dic
 
 
 # %%

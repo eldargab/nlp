@@ -1,6 +1,9 @@
+from typing import NamedTuple
+
 import numpy as np
 import math
-import itertools
+
+import util
 
 
 def softmax(x: np.ndarray) -> np.ndarray:
@@ -58,7 +61,7 @@ class FastText:
         self.output_weights = checkpoint[1].copy()
 
 
-def train(sentence_seq, y: np.ndarray, dict_size: int, n_labels: int, model_idx: int = 0) -> FastText:
+def train(sentence_seq: np.ndarray, y: np.ndarray, dict_size: int, n_labels: int, model_idx: int = 0) -> FastText:
     model = FastText(dict_size=dict_size, dict_dim=100, n_labels=n_labels)
     n_samples = len(y)
     permutation = np.random.default_rng().permutation(n_samples)

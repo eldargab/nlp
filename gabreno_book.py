@@ -1,6 +1,7 @@
 # %%
 from ft_book import *
 set_builder(globals())
+aimport('gabreno')
 
 # %%
 import pandas as pd
@@ -9,17 +10,17 @@ import pandas as pd
 @task
 def get_groups() -> Mapping[str, float]:
     return {
-        'НСИ': 0,
-        'МНСИ': 0,
-        'АС УиО SAPFI': 5,
-        'АС УиО SAPAA': 5,
-        # 'АС УиО SAPCO': 9,
-        # 'АС УиО SAPNU': 9,
-        'АСУ-Казначейство': 20,
-        'КИСУ Закупки': 2,
-        'ЦИУС-ЗУП': 2,
-        # 'Внутренней ИТ-инфраструктуры': 10,
-        # 'Сигма': 200
+        'НСИ': 0.8,
+        'МНСИ': 0.8,
+        'АС УиО SAPFI': 0.9,
+        'АС УиО SAPAA': 0.9,
+        'АС УиО SAPCO': 0.9,
+        'АС УиО SAPNU': 0.9,
+        'АСУ-Казначейство': 0.9,
+        'КИСУ Закупки': 0.9,
+        'ЦИУС-ЗУП': 0.9,
+        'Внутренней ИТ-инфраструктуры': 0.95,
+        'Сигма': 0.99
     }
 
 
@@ -57,11 +58,13 @@ def get_features():
 def train_model():
     import gabreno
 
+    reg_src_module(gabreno)
+
     x, y = get_features()[0]
 
     model = gabreno.Classifier(
-        costs=list(get_penalties()),
-        default_group_idx=get_label_cat_type().categories.get_loc('other')
+        precision=list(get_target_precision()),
+        default_group_idx=get_default_group_idx()
     )
 
     model.fit(x, y.cat.codes)
@@ -71,3 +74,5 @@ def train_model():
 
 # %%
 test_set_performance()
+
+# %%

@@ -34,17 +34,17 @@ def dataset():
 @task
 def get_groups() -> Mapping[str, float]:
     return {
-        'НСИ': 0,
-        'МНСИ': 0,
-        'АС УиО SAPFI': 20,
-        'АС УиО SAPAA': 5,
-        # 'АС УиО SAPCO': 9,
-        # 'АС УиО SAPNU': 9,
-        'АСУ-Казначейство': 20,
-        'КИСУ Закупки': 2,
-        'ЦИУС-ЗУП': 2,
-        # 'Внутренней ИТ-инфраструктуры': 10,
-        # 'Сигма': 200
+        'НСИ': 0.8,
+        'МНСИ': 0.8,
+        'АС УиО SAPFI': 0.9,
+        'АС УиО SAPAA': 0.9,
+        'АС УиО SAPCO': 0.9,
+        'АС УиО SAPNU': 0.9,
+        'АСУ-Казначейство': 0.9,
+        'КИСУ Закупки': 0.9,
+        'ЦИУС-ЗУП': 0.9,
+        'Внутренней ИТ-инфраструктуры': 0.95,
+        'Сигма': 0.99
     }
 
 
@@ -60,11 +60,16 @@ def get_labels() -> pd.Series:
 
 
 @task
-def get_penalties() -> np.ndarray:
+def get_default_group_idx():
+    return get_label_cat_type().categories.get_loc('other')
+
+
+@task
+def get_target_precision() -> np.ndarray:
     groups = get_groups()
     cat_type = get_label_cat_type()
-    penalty_series = cat_type.categories.map(lambda g: groups.get(g, 0))  # type: pd.Series
-    return penalty_series.to_numpy(dtype=np.float)
+    series = cat_type.categories.map(lambda g: groups.get(g, 0.0))  # type: pd.Series
+    return series.to_numpy(dtype=np.float)
 
 
 @task
@@ -112,7 +117,7 @@ def train_model():
 
     (x_train, y_train), _, dic = get_features()
     n_labels = get_labels_count()
-    penalties = get_penalties()
+    precision = get_target_precision()
 
     x = dask.delayed(x_train.to_numpy())
     y = dask.delayed(y_train.cat.codes.to_numpy())
@@ -121,7 +126,9 @@ def train_model():
     with dask.config.set(scheduler='processes'):
         models = dask.compute([train(x, y, dic.size, n_labels, idx) for idx in range(0, 10)])[0]
 
-    return util.EnsembleModel([util.ProbThresholdModel(m, penalties) for m in models])
+    return util.EnsembleModel([util.ProbThresholdModel(m, precision, get_default_group_idx()) for m in models])
     # return util.EnsembleModel(models)
     # model = ft.train(x_train.to_numpy(), y_train.cat.codes.to_numpy(), dic.size, n_labels, 0)
     # return util.ProbThresholdModel(model, penalties)
+
+# %%

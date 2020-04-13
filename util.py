@@ -1,9 +1,9 @@
 from collections import OrderedDict
-from typing import Callable, Iterator, TypeVar, Iterable
+from typing import Callable, Iterator, TypeVar, Iterable, List
 
 import numpy as np
 import pandas as pd
-
+from scipy.stats import binom
 
 T = TypeVar('T')
 
@@ -205,21 +205,6 @@ class RaggedPaddedBatches:
         return iterable
 
 
-class ProbThresholdModel:
-    def __init__(self, model, penalties):
-        self.model = model
-        self.penalties = penalties
-
-    def predict(self, x) -> np.ndarray:
-        prob = self.model.predict_prob(x)
-        score = prob + (prob - 1) * self.penalties
-        return score.argmax(axis=1)
-
-    def predict_prob(self, x) -> np.ndarray:
-        return self.model.predict_prob(x)
-
-
-
 class EnsembleModel:
     def __init__(self, models):
         self.models = models
@@ -235,3 +220,167 @@ class EnsembleModel:
 
     def predict_prob(self, x) -> np.ndarray:
         return np.mean([m.predict_prob(x) for m in self.models], axis=0)
+
+
+class ProbThresholdModel:
+    def __init__(self, model, threshold, default_group_idx):
+        self.model = model
+        self.threshold = threshold
+        self.default_group_idx = default_group_idx
+
+    def predict(self, x) -> np.ndarray:
+        prob = self.model.predict_prob(x)
+        return predict_with_threshold(prob, self.threshold, self.default_group_idx)
+
+    def predict_prob(self, x) -> np.ndarray:
+        return self.model.predict_prob(x)
+
+
+def predict_with_threshold(scores: np.ndarray, threshold: np.ndarray, default_group_idx):
+    y = scores.argmax(axis=1)
+    diff = scores - threshold
+    y[diff[np.arange(0, len(y)), y] <= 0] = default_group_idx
+    return y
+
+
+def fit_binary_threshold(score: np.ndarray, y: np.ndarray, precision: np.float) -> float:
+    fp_cost = np.divide(precision, np.subtract(1, precision))
+    order = np.flipud(np.argsort(score))
+    cum_score = np.empty(len(y))
+    positives = y[order]
+    negatives = ~positives
+    cum_score[positives] = 1.0
+    cum_score[negatives] = -1 * fp_cost
+    np.cumsum(cum_score, out=cum_score)
+    idx = np.argmax(cum_score)
+
+    if cum_score[idx] <= 0:
+        return np.inf
+
+    n = idx + 1
+    fp_count = np.sum(negatives[0:idx+1])
+
+    if binom.cdf(fp_count, n, 1-precision) > 0.3:
+        return np.inf
+
+    if idx + 1 == len(y):
+        return score[order[idx]]
+    else:
+        return np.mean([score[order[idx + 1]], score[order[idx]]])
+
+
+def fit_threshold_vector(scores: np.ndarray, y: np.ndarray, precision: np.ndarray) -> np.ndarray:
+    thresholds = np.zeros_like(precision)
+    for i, p in enumerate(precision):
+        i_scores = scores[:, i]
+        thresholds[i] = fit_binary_threshold(i_scores, y == i, p)
+    return thresholds
+
+
+def compute_precision_score(precision, default_group_idx: int, y, guesses):
+    costs = np.divide(precision, np.subtract(1, precision))
+    hits = y == guesses
+    misses = ~hits
+    n_labels = len(costs)
+
+    tp = np.bincount(
+        y[hits],
+        minlength=n_labels
+    )[:n_labels]
+
+    fp = np.bincount(
+        guesses[misses],
+        minlength=n_labels
+    )[:n_labels]
+
+    tp[default_group_idx] = 0
+    fp[default_group_idx] = 0
+
+    score = np.sum(tp) - np.dot(fp, costs)
+    return score / len(y)
+
+
+class NNClassifierTraining:
+    def __init__(self, x, y, precision, default_group_idx):
+        self.x = x
+        self.y = y
+        self.precision = precision
+        self.default_group_idx = default_group_idx
+
+    def new_model(self):
+        raise NotImplementedError()
+
+    def train_epoch(self, model, x, y):
+        raise NotImplementedError()
+
+    def shuffle_xy(self, seed=None):
+        rng = np.random.default_rng(seed)
+        permutation = rng.permutation(len(self.y))
+        x = self.x[permutation]
+        y = self.y[permutation]
+        return x, y
+
+    def run(self):
+        threshold, n_epochs = self._fit_threshold_and_epochs()
+        model = self._fit_n_epochs_model(n_epochs)
+        return ProbThresholdModel(model, threshold, self.default_group_idx)
+
+    def _fit_n_epochs_model(self, n_epochs, model_idx=1):
+        x, y = self.shuffle_xy()
+        model = self.new_model()
+
+        for epoch in range(1, n_epochs + 1):
+            loss = self.train_epoch(model, x, y)
+            print(f'model: {model_idx}, epoch: {epoch}, loss: {loss}')
+
+        return model
+
+    def _fit_threshold_and_epochs(self):
+        from sklearn.model_selection import StratifiedKFold
+
+        thresholds = []
+        epochs = []
+
+        k_folds = StratifiedKFold(10, shuffle=True).split(self.x, self.y)
+
+        for k_fold_idx, (train_set, test_set) in enumerate(k_folds):
+            th, epoch = self._fit_k_fold(k_fold_idx, train_set, test_set)
+            thresholds.append(th)
+            epochs.append(epoch)
+
+        return np.mean(thresholds, axis=0), round(np.mean(epochs))
+
+
+    def _fit_k_fold(self, k_fold_idx, train_set, test_set):
+        model = self.new_model()
+
+        x_train, y_train = self.x[train_set], self.y[train_set]
+        x_test, y_test = self.x[test_set], self.y[test_set]
+
+        prev_score = None
+        prev_threshold = None
+
+        for epoch in range(1, 50):
+            loss = self.train_epoch(model, x_train, y_train)
+
+            prob = model.predict_prob(x_test)
+
+            threshold = fit_threshold_vector(prob, y_test, self.precision)
+
+            score = compute_precision_score(
+                self.precision,
+                self.default_group_idx,
+                y_test,
+                predict_with_threshold(prob, threshold, self.default_group_idx)
+            )
+
+            print(f'k-fold: {k_fold_idx}, epoch: {epoch}, loss: {round(loss, 2)}, v-score: {round(score, 2)}')
+
+            if prev_score is not None and prev_score < score:
+                return prev_threshold, epoch - 1
+            else:
+                prev_score = score
+                prev_threshold = threshold
+
+        return prev_threshold, epoch
+

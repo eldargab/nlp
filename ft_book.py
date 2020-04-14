@@ -126,7 +126,7 @@ def train_model():
     )
 
     with dask.config.set(scheduler='processes'):
-        return training.train_ensemble()
+        return training.train()
 
 # %%
 

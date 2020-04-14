@@ -399,25 +399,7 @@ class NNClassifierTraining(NNTraining, ABC):
         self.default_group_idx = default_group_idx
 
 
-    def train(self):
-        n_epochs, threshold = self._fit_epochs_and_threshold()
-        model = self.train_n_epochs(n_epochs)
-        return ProbThresholdModel(model, threshold, self.default_group_idx)
-
-
-    def train_ensemble(self):
-        n_epochs, threshold = self._fit_epochs_and_threshold()
-        ensemble = self.train_ensemble_(n_epochs=n_epochs)
-        ensemble.models = [ProbThresholdModel(m, threshold, self.default_group_idx) for m in ensemble.models]
-        return ensemble
-
-
-    @staticmethod
-    def train_single_ensemble_model(self: 'NNClassifierTraining', n_epochs, model_idx=1):
-        return self.train_n_epochs(n_epochs, model_idx=model_idx)
-
-
-    def _fit_epochs_and_threshold(self) -> (int, np.ndarray):
+    def train(self) -> (int, np.ndarray):
         from sklearn.model_selection import StratifiedKFold
 
         k_folds = StratifiedKFold(10, shuffle=True).split(self.x, self.y)
@@ -430,13 +412,13 @@ class NNClassifierTraining(NNTraining, ABC):
 
         results = dask.compute(list(delayed_k_fold_results()))[0]
 
-        n_epochs = int(np.round(np.mean([epoch for epoch, _, _ in results])))
-
         test_prob = np.concatenate([p for _, p, _ in results], axis=0)
         test_set = np.concatenate([test_idx for _, _, test_idx in results], axis=0)
         threshold = fit_threshold_vector(test_prob, self.y[test_set], self.precision)
 
-        return n_epochs, threshold
+        models = [ProbThresholdModel(m, threshold, self.default_group_idx) for m, _, _ in results]
+
+        return EnsembleModel(models)
 
 
     @staticmethod
@@ -448,6 +430,7 @@ class NNClassifierTraining(NNTraining, ABC):
 
         prev_score = None
         prev_prob_test = None
+        prev_checkpoint = None
 
         for epoch in range(1, 50):
             loss = self.train_epoch(model, x_train, y_train)
@@ -466,10 +449,12 @@ class NNClassifierTraining(NNTraining, ABC):
             print(f'k-fold: {k_fold_idx}, epoch: {epoch}, loss: {round(loss, 3)}, v-score: {round(score, 3)}')
 
             if prev_score is not None and score < prev_score:
-                return epoch - 1, prev_prob_test, test_set
+                model.restore_checkpoint(prev_checkpoint)
+                return model, prev_prob_test, test_set
             else:
                 prev_score = score
                 prev_prob_test = prob_test
+                prev_checkpoint = model.save_checkpoint()
 
-        return epoch, prev_prob_test, test_set
+        return model, prev_prob_test, test_set
 

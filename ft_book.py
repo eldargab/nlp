@@ -14,6 +14,7 @@ from exp import *
 import numpy as np
 import pandas as pd
 import dask.dataframe as dd
+import dask
 import util
 import ft
 
@@ -111,24 +112,21 @@ def get_features() -> Tuple[Tuple[X, Y], Tuple[X, Y], Dictionary]:
 # %%
 @task
 def train_model():
-    import dask.multiprocessing
-
     reg_src_module(ft)
 
     (x_train, y_train), _, dic = get_features()
-    n_labels = get_labels_count()
     precision = get_target_precision()
 
-    x = dask.delayed(x_train.to_numpy())
-    y = dask.delayed(y_train.cat.codes.to_numpy())
-    train = dask.delayed(ft.train)
+    training = ft.ClassifierTraining(
+        x_train.to_numpy(),
+        y_train.cat.codes.to_numpy(),
+        precision,
+        get_default_group_idx(),
+        dict_size=dic.size
+    )
 
     with dask.config.set(scheduler='processes'):
-        models = dask.compute([train(x, y, dic.size, n_labels, idx) for idx in range(0, 10)])[0]
-
-    return util.EnsembleModel([util.ProbThresholdModel(m, precision, get_default_group_idx()) for m in models])
-    # return util.EnsembleModel(models)
-    # model = ft.train(x_train.to_numpy(), y_train.cat.codes.to_numpy(), dic.size, n_labels, 0)
-    # return util.ProbThresholdModel(model, penalties)
+        return training.train_ensemble()
 
 # %%
+

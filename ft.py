@@ -1,8 +1,5 @@
-from typing import NamedTuple
-
 import numpy as np
 import math
-
 import util
 
 
@@ -61,33 +58,44 @@ class FastText:
         self.output_weights = checkpoint[1].copy()
 
 
-def train(sentence_seq: np.ndarray, y: np.ndarray, dict_size: int, n_labels: int, model_idx: int = 0) -> FastText:
-    model = FastText(dict_size=dict_size, dict_dim=100, n_labels=n_labels)
-    n_samples = len(y)
-    permutation = np.random.default_rng().permutation(n_samples)
+class Training:
+    def __init__(self, dict_size, dict_dim, n_labels, **kwargs):
+        self.dict_size = dict_size
+        self.dict_dim = dict_dim
+        self.n_labels = n_labels
+        super().__init__(**kwargs)
 
-    vset_size = n_samples // 5
-    vset_idx = permutation[0:vset_size]
-    vset_x = sentence_seq[vset_idx]
-    vset_y = y[vset_idx]
+    def new_model(self):
+        return FastText(self.dict_size, self.dict_dim, n_labels=self.n_labels)
 
-    prev_vset_loss = None
-    prev_checkpoint = None
-
-    for epoch in range(0, 30):
+    def train_epoch(self, model: FastText, x, y):
         loss = 0.0
+        for i in range(0, len(y)):
+            loss += model.backward(x[i], y[i], lr=0.2)
+        return loss / len(y)
 
-        for i in range(vset_size, n_samples):
-            loss += model.backward(sentence_seq[permutation[i]], y[permutation[i]], lr=0.2)
 
-        loss = loss / n_samples
-        vset_loss = model.loss(vset_x, vset_y)
-        print(f'model: {model_idx}, epoch: {epoch}, loss: {round(loss, 2)}, vset loss: {round(vset_loss, 2)}')
-        if prev_vset_loss is not None and prev_vset_loss < vset_loss:
-            model.restore_checkpoint(prev_checkpoint)
-            break
-        else:
-            prev_vset_loss = vset_loss
-            prev_checkpoint = model.save_checkpoint()
+class ClassifierTraining(Training, util.NNClassifierTraining):
+    def __init__(self, x, y, precision, default_group_idx, dict_size, dict_dim=100):
+        args = dict(
+            x=x,
+            y=y,
+            precision=precision,
+            default_group_idx=default_group_idx,
+            dict_size=dict_size,
+            dict_dim=dict_dim,
+            n_labels=len(precision)
+        )
+        super().__init__(**args)
 
-    return model
+
+class RegressionTraining(Training, util.NNTraining):
+    def __init__(self, x, y, n_labels, dict_size, dict_dim=100):
+        args = dict(
+            x=x,
+            y=y,
+            n_labels=n_labels,
+            dict_size=dict_size,
+            dict_dim=dict_dim
+        )
+        super().__init__(**args)

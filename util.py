@@ -1,9 +1,11 @@
+from abc import ABC
 from collections import OrderedDict
 from typing import Callable, Iterator, TypeVar, Iterable, List
 
 import numpy as np
 import pandas as pd
 from scipy.stats import binom
+import dask
 
 T = TypeVar('T')
 
@@ -243,7 +245,7 @@ def predict_with_threshold(scores: np.ndarray, threshold: np.ndarray, default_gr
     return y
 
 
-def fit_binary_threshold(score: np.ndarray, y: np.ndarray, precision: np.float) -> float:
+def fit_binary_threshold(score: np.ndarray, y: np.ndarray, precision: np.float, alpha=0.3) -> float:
     fp_cost = np.divide(precision, np.subtract(1, precision))
     order = np.flipud(np.argsort(score))
     cum_score = np.empty(len(y))
@@ -260,7 +262,7 @@ def fit_binary_threshold(score: np.ndarray, y: np.ndarray, precision: np.float) 
     n = idx + 1
     fp_count = np.sum(negatives[0:idx+1])
 
-    if binom.cdf(fp_count, n, 1-precision) > 0.3:
+    if binom.cdf(fp_count, n, 1-precision) > alpha:
         return np.inf
 
     if idx + 1 == len(y):
@@ -269,11 +271,11 @@ def fit_binary_threshold(score: np.ndarray, y: np.ndarray, precision: np.float) 
         return np.mean([score[order[idx + 1]], score[order[idx]]])
 
 
-def fit_threshold_vector(scores: np.ndarray, y: np.ndarray, precision: np.ndarray) -> np.ndarray:
+def fit_threshold_vector(scores: np.ndarray, y: np.ndarray, precision: np.ndarray, alpha=0.3) -> np.ndarray:
     thresholds = np.zeros_like(precision)
     for i, p in enumerate(precision):
         i_scores = scores[:, i]
-        thresholds[i] = fit_binary_threshold(i_scores, y == i, p)
+        thresholds[i] = fit_binary_threshold(i_scores, y == i, p, alpha)
     return thresholds
 
 
@@ -300,18 +302,26 @@ def compute_precision_score(precision, default_group_idx: int, y, guesses):
     return score / len(y)
 
 
-class NNClassifierTraining:
-    def __init__(self, x, y, precision, default_group_idx):
+class NNTraining:
+    def __init__(self, x, y):
         self.x = x
         self.y = y
-        self.precision = precision
-        self.default_group_idx = default_group_idx
+        self.__delayed = None
+
 
     def new_model(self):
         raise NotImplementedError()
 
+
     def train_epoch(self, model, x, y):
         raise NotImplementedError()
+
+
+    def delayed(self):
+        if self.__delayed is None:
+            self.__delayed = dask.delayed(self)
+        return self.__delayed
+
 
     def shuffle_xy(self, seed=None):
         rng = np.random.default_rng(seed)
@@ -320,12 +330,8 @@ class NNClassifierTraining:
         y = self.y[permutation]
         return x, y
 
-    def run(self):
-        threshold, n_epochs = self._fit_threshold_and_epochs()
-        model = self._fit_n_epochs_model(n_epochs)
-        return ProbThresholdModel(model, threshold, self.default_group_idx)
 
-    def _fit_n_epochs_model(self, n_epochs, model_idx=1):
+    def train_n_epochs(self, n_epochs, model_idx=1):
         x, y = self.shuffle_xy()
         model = self.new_model()
 
@@ -335,22 +341,105 @@ class NNClassifierTraining:
 
         return model
 
-    def _fit_threshold_and_epochs(self):
-        from sklearn.model_selection import StratifiedKFold
 
-        thresholds = []
-        epochs = []
+    def train_best_vset_loss_epochs(self, model_idx=1):
+        x, y = self.shuffle_xy()
+
+        n_samples = len(y)
+        vset_size = n_samples // 5
+        test_x = x[0:vset_size]
+        test_y = y[0:vset_size]
+        train_x = x[vset_size:]
+        train_y = y[vset_size:]
+
+        model = self.new_model()
+
+        prev_vset_loss = None
+        prev_checkpoint = None
+
+        for epoch in range(0, 30):
+            loss = self.train_epoch(model, train_x, train_y)
+
+            vset_loss = model.loss(test_x, test_y)
+            print(f'model: {model_idx}, epoch: {epoch}, loss: {round(loss, 2)}, vset loss: {round(vset_loss, 2)}')
+            if prev_vset_loss is not None and prev_vset_loss < vset_loss:
+                model.restore_checkpoint(prev_checkpoint)
+                break
+            else:
+                prev_vset_loss = vset_loss
+                prev_checkpoint = model.save_checkpoint()
+
+        return model
+
+
+    def train(self):
+        return self.train_best_vset_loss_epochs()
+
+
+    @staticmethod
+    def train_single_ensemble_model(self, **kwargs):
+        return self.train_best_vset_loss_epochs(**kwargs)
+
+
+    def train_ensemble_(self, size=10, **kwargs) -> EnsembleModel:
+        kwargs = dict([(k, dask.delayed(v)) for k, v in kwargs.items()])
+        train = dask.delayed(self.train_single_ensemble_model)
+        models = dask.compute([train(self.delayed(), model_idx=i, **kwargs) for i in range(1, size + 1)])[0]
+        return EnsembleModel(models)
+
+
+    def train_ensemble(self):
+        return self.train_ensemble_()
+
+
+class NNClassifierTraining(NNTraining, ABC):
+    def __init__(self, x, y, precision, default_group_idx):
+        super().__init__(x, y)
+        self.precision = precision
+        self.default_group_idx = default_group_idx
+
+
+    def train(self):
+        n_epochs, threshold = self._fit_epochs_and_threshold()
+        model = self.train_n_epochs(n_epochs)
+        return ProbThresholdModel(model, threshold, self.default_group_idx)
+
+
+    def train_ensemble(self):
+        n_epochs, threshold = self._fit_epochs_and_threshold()
+        ensemble = self.train_ensemble_(n_epochs=n_epochs)
+        ensemble.models = [ProbThresholdModel(m, threshold, self.default_group_idx) for m in ensemble.models]
+        return ensemble
+
+
+    @staticmethod
+    def train_single_ensemble_model(self: 'NNClassifierTraining', n_epochs, model_idx=1):
+        return self.train_n_epochs(n_epochs, model_idx=model_idx)
+
+
+    def _fit_epochs_and_threshold(self) -> (int, np.ndarray):
+        from sklearn.model_selection import StratifiedKFold
 
         k_folds = StratifiedKFold(10, shuffle=True).split(self.x, self.y)
 
-        for k_fold_idx, (train_set, test_set) in enumerate(k_folds):
-            th, epoch = self._fit_k_fold(k_fold_idx, train_set, test_set)
-            thresholds.append(th)
-            epochs.append(epoch)
+        fit_k_fold = dask.delayed(self._fit_k_fold)
 
-        return np.mean(thresholds, axis=0), round(np.mean(epochs))
+        def delayed_k_fold_results():
+            for k_fold_idx, (train_set, test_set) in enumerate(k_folds):
+                yield fit_k_fold(self.delayed(), k_fold_idx, train_set, test_set)
+
+        results = dask.compute(list(delayed_k_fold_results()))[0]
+
+        n_epochs = int(np.round(np.mean([epoch for epoch, _, _ in results])))
+
+        test_prob = np.concatenate([p for _, p, _ in results], axis=0)
+        test_set = np.concatenate([test_idx for _, _, test_idx in results], axis=0)
+        threshold = fit_threshold_vector(test_prob, self.y[test_set], self.precision)
+
+        return n_epochs, threshold
 
 
+    @staticmethod
     def _fit_k_fold(self, k_fold_idx, train_set, test_set):
         model = self.new_model()
 
@@ -358,29 +447,29 @@ class NNClassifierTraining:
         x_test, y_test = self.x[test_set], self.y[test_set]
 
         prev_score = None
-        prev_threshold = None
+        prev_prob_test = None
 
         for epoch in range(1, 50):
             loss = self.train_epoch(model, x_train, y_train)
 
-            prob = model.predict_prob(x_test)
+            prob_test = model.predict_prob(x_test)
 
-            threshold = fit_threshold_vector(prob, y_test, self.precision)
+            threshold = fit_threshold_vector(prob_test, y_test, self.precision, alpha=1.0)
 
             score = compute_precision_score(
                 self.precision,
                 self.default_group_idx,
                 y_test,
-                predict_with_threshold(prob, threshold, self.default_group_idx)
+                predict_with_threshold(prob_test, threshold, self.default_group_idx)
             )
 
-            print(f'k-fold: {k_fold_idx}, epoch: {epoch}, loss: {round(loss, 2)}, v-score: {round(score, 2)}')
+            print(f'k-fold: {k_fold_idx}, epoch: {epoch}, loss: {round(loss, 3)}, v-score: {round(score, 3)}')
 
-            if prev_score is not None and prev_score < score:
-                return prev_threshold, epoch - 1
+            if prev_score is not None and score < prev_score:
+                return epoch - 1, prev_prob_test, test_set
             else:
                 prev_score = score
-                prev_threshold = threshold
+                prev_prob_test = prob_test
 
-        return prev_threshold, epoch
+        return epoch, prev_prob_test, test_set
 

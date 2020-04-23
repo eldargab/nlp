@@ -115,13 +115,12 @@ def train_model():
     reg_src_module(ft)
 
     (x_train, y_train), _, dic = get_features()
-    precision = get_target_precision()
+    # precision = get_target_precision()
 
-    training = ft.ClassifierTraining(
-        x_train.to_numpy(),
-        y_train.cat.codes.to_numpy(),
-        precision,
-        get_default_group_idx(),
+    training = ft.RegressionTraining(
+        x=x_train.to_numpy(),
+        y=y_train.cat.codes.to_numpy(),
+        n_labels=len(y_train.cat.categories),
         dict_size=dic.size
     )
 
@@ -129,4 +128,3 @@ def train_model():
         return training.train()
 
 # %%
-

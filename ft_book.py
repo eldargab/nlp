@@ -15,8 +15,6 @@ import numpy as np
 import pandas as pd
 import dask.dataframe as dd
 import dask
-import util
-import ft
 
 
 # %%
@@ -112,6 +110,8 @@ def get_features() -> Tuple[Tuple[X, Y], Tuple[X, Y], Dictionary]:
 # %%
 @task
 def train_model():
+    import ft
+
     reg_src_module(ft)
 
     (x_train, y_train), _, dic = get_features()
@@ -126,5 +126,6 @@ def train_model():
 
     with dask.config.set(scheduler='processes'):
         return training.train()
+
 
 # %%

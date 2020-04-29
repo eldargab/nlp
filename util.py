@@ -1,6 +1,6 @@
 from abc import ABC
 from collections import OrderedDict
-from typing import Callable, Iterator, TypeVar, Iterable, List
+from typing import Callable, Iterator, TypeVar, Iterable, List, NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -205,6 +205,25 @@ class RaggedPaddedBatches:
                 yield tensor[start:end].view(self.batch_size, -1)
 
         return iterable
+
+
+class RaggedSeq(NamedTuple):
+    data: np.ndarray
+    index: np.ndarray
+
+    @staticmethod
+    def from_seq(seq):
+        offsets = np.empty(len(seq) + 1, dtype=np.int)
+        length = sum(len(x) for x in seq)
+        data = np.empty(length, dtype=seq[0].dtype)
+        offset = 0
+        for i, x in enumerate(seq):
+            end = offset + len(x)
+            data[offset:end] = x
+            offsets[i] = offset
+            offset = end
+        offsets[len(seq)] = length
+        return RaggedSeq(data=data, index=offsets)
 
 
 class EnsembleModel:

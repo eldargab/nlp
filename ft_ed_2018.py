@@ -36,7 +36,7 @@ class FastTextEd2018(Exp, Energodata2018):
 
         return (x_train, y_train), (x_test, y_test), dic
 
-
+    @task
     def model(self):
         import ft
 

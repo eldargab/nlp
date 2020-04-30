@@ -1,5 +1,6 @@
 import os
 import struct
+import inspect
 from collections import OrderedDict
 from contextlib import contextmanager
 from functools import wraps
@@ -39,7 +40,8 @@ def crc_files(files: Iterable[str], crc: CRC) -> CRC:
 
 
 def crc_fn(f, crc: CRC) -> CRC:
-    return crc32(f.__code__.co_code, crc)
+    src = inspect.getsource(f)
+    return crc_str(src, crc)
 
 
 class Task(NamedTuple):
@@ -179,7 +181,7 @@ class App:
             if not os.path.exists(f):
                 return True
 
-        crc = 0
+        crc = rec.f_crc
         with self._new_task_ctx(None):
             for dep_id, (old_val, old_crc) in rec.deps.items():
                 dep = self._eval_id(dep_id)

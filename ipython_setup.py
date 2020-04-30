@@ -17,7 +17,8 @@ def aimport_project_files():
     for f in glob.glob('*.py'):
         f = os.path.basename(f)
         f = os.path.splitext(f)[0]
-        aimport(f)
+        if f != 'temp':
+            aimport(f)
 
 
 autoreload()

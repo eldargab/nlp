@@ -1,6 +1,5 @@
 import numpy as np
 import math
-import util
 
 
 def softmax(x: np.ndarray) -> np.ndarray:
@@ -56,46 +55,3 @@ class FastText:
     def restore_checkpoint(self, checkpoint):
         self.embedding = checkpoint[0].copy()
         self.output_weights = checkpoint[1].copy()
-
-
-class Training:
-    def __init__(self, dict_size, dict_dim, n_labels, **kwargs):
-        self.dict_size = dict_size
-        self.dict_dim = dict_dim
-        self.n_labels = n_labels
-        super().__init__(**kwargs)
-
-    def new_model(self):
-        return FastText(self.dict_size, self.dict_dim, n_labels=self.n_labels)
-
-    def train_epoch(self, model: FastText, x, y):
-        loss = 0.0
-        for i in range(0, len(y)):
-            loss += model.backward(x[i], y[i], lr=0.2)
-        return loss / len(y)
-
-
-class ClassifierTraining(Training, util.NNClassifierTraining):
-    def __init__(self, x, y, precision, default_group_idx, dict_size, dict_dim=100):
-        args = dict(
-            x=x,
-            y=y,
-            precision=precision,
-            default_group_idx=default_group_idx,
-            dict_size=dict_size,
-            dict_dim=dict_dim,
-            n_labels=len(precision)
-        )
-        super().__init__(**args)
-
-
-class RegressionTraining(Training, util.NNTraining):
-    def __init__(self, x, y, n_labels, dict_size, dict_dim=100):
-        args = dict(
-            x=x,
-            y=y,
-            n_labels=n_labels,
-            dict_size=dict_size,
-            dict_dim=dict_dim
-        )
-        super().__init__(**args)

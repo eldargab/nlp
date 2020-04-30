@@ -10,5 +10,16 @@ def aimport(s: str):
     get_ipython().magic('aimport ' + s)
 
 
+def aimport_project_files():
+    import glob
+    import os
+
+    for f in glob.glob('*.py'):
+        f = os.path.basename(f)
+        f = os.path.splitext(f)[0]
+        aimport(f)
+
+
 autoreload()
-aimport('util, datasets, exp, builder')
+aimport_project_files()
+

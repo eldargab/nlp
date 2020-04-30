@@ -1,51 +1,54 @@
+from typing import Any, Tuple, Callable
 from builder import task
-import util
 import pandas as pd
+import util
 
 
-@task
-def train_model():
-    raise NotImplementedError()
+X = Any
+Y = pd.Series
 
 
-@task
-def get_features():
-    raise NotImplementedError()
+class Exp:
+    test_set: Callable[[], Tuple[X, Y]]
+    train_set: Callable[[], Tuple[X, Y]]
+    model: Callable[[], Any]
 
 
-@task
-def get_model():
-    return train_model()
+    @task
+    def label_cat_type(self) -> pd.CategoricalDtype:
+        _, y_test = self.test_set()
+        return y_test.dtype
 
 
-def get_label_cat_type() -> pd.CategoricalDtype:
-    _, y_test = get_features()[1]
-    return y_test.dtype
+    @task
+    def n_labels(self):
+        return len(self.label_cat_type().categories)
 
 
-def get_labels_count():
-    return len(get_label_cat_type().categories)
+    @task
+    def default_group_idx(self):
+        return self.label_cat_type().categories.get_loc('other')
 
 
-def predict(x):
-    model = get_model()
-    y = model.predict(x)
-    return pd.Categorical.from_codes(y, dtype=get_label_cat_type())
+    def predict(self, x: X):
+        model = self.model()
+        y = model.predict(x)
+        return pd.Categorical.from_codes(y, dtype=self.label_cat_type())
 
 
-def performance(data):
-    x_test, y_test = data
-    guess = predict(x_test)
-    return util.describe_results(y_test, guess)
+    def performance(self, data: Tuple[X, Y]):
+        x_test, y_test = data
+        guess = self.predict(x_test)
+        return util.describe_results(y_test, guess)
 
 
-@task
-def test_set_performance():
-    data = get_features()[1]
-    return performance(data)
+    @task
+    def test_set_performance(self):
+        data = self.test_set()
+        return self.performance(data)
 
 
-@task
-def train_set_performance():
-    data = get_features()[0]
-    return performance(data)
+    @task
+    def train_set_performance(self):
+        data = self.train_set()
+        return self.performance(data)

@@ -1,14 +1,11 @@
 ipython:
-	@ipython -i --ext autoreload -c "\
-	get_ipython().magic('autoreload 1');\
+	@ipython -i -c "\
 	import numpy as np;\
-	import torch;\
-	import itertools;\
+	import pandas as pd;\
 	import dask;\
 	import dask.dataframe as dd;\
-	from builder import *;\
-	set_default_builder(globals());\
-	get_ipython().magic('aimport util, exp');\
+	import itertools;\
+	import ipython_setup;\
 	"
 
 

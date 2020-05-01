@@ -79,6 +79,8 @@ class Rec:
         self.crc = self.f_crc
 
     def reg_dep(self, rec: 'Rec'):
+        if rec.id in self.deps:
+            return
         self.deps[rec.id] = rec.value, rec.crc
         self.crc = crc_int(rec.crc, self.crc)
 
